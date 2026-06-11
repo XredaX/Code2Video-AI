@@ -13,8 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AI Video Editor",
-  description: "Generate Remotion videos with Gemini AI",
+  title: "AI Video Editor — Remotion + Gemini",
+  description:
+    "Generate, edit, and render professional Remotion video compositions using Google Gemini AI. Describe your vision, get production-ready TSX code, and render video directly in your browser.",
 };
 
 export default function RootLayout({

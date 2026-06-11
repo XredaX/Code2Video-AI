@@ -15,7 +15,7 @@ const DEFAULTS = {
 };
 
 /**
- * Extract compositionConfig from a TSX file using regex
+ * Extract compositionConfig from a TSX file using brace matching
  * @param {string} filePath - Absolute path to TSX file
  * @returns {Object} Configuration object
  */
@@ -23,66 +23,144 @@ function extractCompositionConfig(filePath) {
   const content = fs.readFileSync(filePath, 'utf-8');
   const filename = path.basename(filePath, '.tsx');
 
-  // Try to find compositionConfig export (same regex as composition-watcher.js)
-  const configMatch = content.match(
-    /export\s+const\s+compositionConfig\s*=\s*(\{[\s\S]*?\});/
+  // Find the compositionConfig declaration block
+  const declMatch = content.match(
+    /(?:const|let|var)\s+compositionConfig(?:\s*:\s*[^=]+)?\s*=/
   );
 
-  if (!configMatch) {
+  if (!declMatch) {
     throw new Error(
       `No compositionConfig found in ${filename}.tsx\n` +
       'Your file must export a compositionConfig object.'
     );
   }
 
-  try {
-    // Clean up the config string for evaluation
-    let configStr = configMatch[1]
-      .replace(/\/\/.*$/gm, '')           // Remove single-line comments
-      .replace(/\/\*[\s\S]*?\*\//g, '')   // Remove multi-line comments
-      .replace(/,(\s*[}\]])/g, '$1');     // Remove trailing commas
-
-    // Simple evaluation for basic configs
-    const config = eval(`(${configStr})`);
-
-    // Validate and return with defaults
-    return {
-      id: config.id || filename,
-      durationInSeconds: config.durationInSeconds || DEFAULTS.durationInSeconds,
-      fps: config.fps || DEFAULTS.fps,
-      width: config.width || DEFAULTS.width,
-      height: config.height || DEFAULTS.height,
-      defaultProps: config.defaultProps || {},
-    };
-  } catch (evalError) {
-    // If eval fails, try to extract values with more specific regexes
-    const configStr = configMatch[1];
-    const id = extractValue(configStr, 'id') || filename;
-    const durationInSeconds = parseFloat(extractValue(configStr, 'durationInSeconds')) || DEFAULTS.durationInSeconds;
-    const fps = parseInt(extractValue(configStr, 'fps')) || DEFAULTS.fps;
-    const width = parseInt(extractValue(configStr, 'width')) || DEFAULTS.width;
-    const height = parseInt(extractValue(configStr, 'height')) || DEFAULTS.height;
-
-    return { id, durationInSeconds, fps, width, height, defaultProps: {} };
+  // Find the '=' sign position and the first opening brace after it
+  const equalsIndex = declMatch.index + declMatch[0].length - 1;
+  const openBraceIndex = content.indexOf('{', equalsIndex);
+  if (openBraceIndex === -1) {
+    throw new Error(
+      `No compositionConfig object definition found in ${filename}.tsx`
+    );
   }
+
+  // Find matching closing brace
+  let braceCount = 1;
+  let closeBraceIndex = -1;
+  for (let i = openBraceIndex + 1; i < content.length; i++) {
+    const char = content[i];
+    if (char === '{') {
+      braceCount++;
+    } else if (char === '}') {
+      braceCount--;
+      if (braceCount === 0) {
+        closeBraceIndex = i;
+        break;
+      }
+    }
+  }
+
+  if (closeBraceIndex === -1) {
+    throw new Error(
+      `Unmatched opening brace in compositionConfig in ${filename}.tsx`
+    );
+  }
+
+  const configStrFull = content.slice(openBraceIndex, closeBraceIndex + 1);
+
+  // --- Safe regex-based extraction (no eval) ---
+  // Security: eval() on AI-generated TSX is a code-injection risk (OWASP A03).
+  // Instead, extract each field individually using targeted regex patterns.
+  const id = extractString(configStrFull, 'id') || filename;
+  const durationInSeconds = extractNumber(configStrFull, 'durationInSeconds') ?? DEFAULTS.durationInSeconds;
+  const fps = extractNumber(configStrFull, 'fps') ?? DEFAULTS.fps;
+  const width = extractNumber(configStrFull, 'width') ?? DEFAULTS.width;
+  const height = extractNumber(configStrFull, 'height') ?? DEFAULTS.height;
+  const defaultProps = extractObject(configStrFull, 'defaultProps') || {};
+
+  return { id, durationInSeconds, fps, width, height, defaultProps };
 }
 
 /**
- * Extract a specific value from a config string using regex
+ * Extract a string value for a given key from the config block.
+ * Matches: key: 'value', key: "value", key: `value`
  */
-function extractValue(configStr, key) {
-  // Match patterns like: key: 'value', key: "value", key: 123
-  const patterns = [
-    new RegExp(`${key}\\s*:\\s*['"]([^'"]+)['"]`),  // String value
-    new RegExp(`${key}\\s*:\\s*(\\d+\\.?\\d*)`),    // Numeric value
-  ];
+function extractString(configStr, key) {
+  const pattern = new RegExp(`${key}\\s*:\\s*['"\`]([^'"\`]+)['"\`]`);
+  const match = configStr.match(pattern);
+  return match ? match[1] : null;
+}
 
-  for (const pattern of patterns) {
-    const match = configStr.match(pattern);
-    if (match) return match[1];
+/**
+ * Extract a numeric value for a given key from the config block.
+ * Matches: key: 123, key: 12.5, key: 100 + 50 (simple arithmetic)
+ */
+function extractNumber(configStr, key) {
+  // Try arithmetic expression first (e.g. 60 * 5, 3 + 2)
+  const arithPattern = new RegExp(`${key}\\s*:\\s*(\\d+(?:\\.\\d+)?)\\s*([*+\\-])\\s*(\\d+(?:\\.\\d+)?)`);
+  const arithMatch = configStr.match(arithPattern);
+  if (arithMatch) {
+    const a = parseFloat(arithMatch[1]);
+    const op = arithMatch[2];
+    const b = parseFloat(arithMatch[3]);
+    switch (op) {
+      case '*': return a * b;
+      case '+': return a + b;
+      case '-': return a - b;
+    }
   }
-
+  // Fallback: plain number
+  const plainPattern = new RegExp(`${key}\\s*:\\s*(-?\\d+(?:\\.\\d+)?)`);
+  const plainMatch = configStr.match(plainPattern);
+  if (plainMatch) {
+    const n = parseFloat(plainMatch[1]);
+    return isNaN(n) ? null : n;
+  }
   return null;
+}
+
+/**
+ * Safely extract a shallow object literal for a given key.
+ * Only supports flat { key: value } objects with string/number values.
+ * Returns null if extraction fails.
+ */
+function extractObject(configStr, key) {
+  const keyIdx = configStr.indexOf(`${key}`);
+  if (keyIdx === -1) return null;
+
+  const colonIdx = configStr.indexOf(':', keyIdx + key.length);
+  if (colonIdx === -1) return null;
+
+  const braceIdx = configStr.indexOf('{', colonIdx);
+  if (braceIdx === -1) return null;
+
+  // Find matching closing brace
+  let depth = 1;
+  let end = -1;
+  for (let i = braceIdx + 1; i < configStr.length; i++) {
+    if (configStr[i] === '{') depth++;
+    else if (configStr[i] === '}') {
+      depth--;
+      if (depth === 0) { end = i; break; }
+    }
+  }
+  if (end === -1) return null;
+
+  const inner = configStr.slice(braceIdx + 1, end).trim();
+  if (!inner) return {};
+
+  // Parse flat key-value pairs safely with regex
+  const result = {};
+  const entryPattern = /(\w+)\s*:\s*(?:'([^']*)'|"([^"]*)"|`([^`]*)`|(-?\d+(?:\.\d+)?))/g;
+  let m;
+  while ((m = entryPattern.exec(inner)) !== null) {
+    const k = m[1];
+    if (m[2] !== undefined) result[k] = m[2];
+    else if (m[3] !== undefined) result[k] = m[3];
+    else if (m[4] !== undefined) result[k] = m[4];
+    else if (m[5] !== undefined) result[k] = parseFloat(m[5]);
+  }
+  return result;
 }
 
 /**

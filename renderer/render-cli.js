@@ -9,6 +9,7 @@
 
 const path = require('path');
 const fs = require('fs');
+const net = require('net');
 const { bundle } = require('@remotion/bundler');
 const { renderMedia, selectComposition, ensureBrowser } = require('@remotion/renderer');
 
@@ -38,6 +39,19 @@ function parseArgs() {
     }
   });
   return args;
+}
+
+// Find an available port by asking the OS to assign one (port 0),
+// then releasing it. This avoids conflicts with Next.js dev server on 3000.
+function findAvailablePort() {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.listen(0, '127.0.0.1', () => {
+      const port = srv.address().port;
+      srv.close(() => resolve(port));
+    });
+    srv.on('error', reject);
+  });
 }
 
 // Generate unique output filename
@@ -145,15 +159,21 @@ async function main() {
         // This allows TSX files to use dependencies installed in the renderer
         webpackConfig.resolve = webpackConfig.resolve || {};
         webpackConfig.resolve.modules = [
+          'node_modules',
+          ...(webpackConfig.resolve.modules || []).filter(m => m !== 'node_modules'),
           rendererNodeModules,
-          ...(webpackConfig.resolve.modules || ['node_modules']),
         ];
+
+        // Alias remotion to use our safe wrapper
+        webpackConfig.resolve.alias = webpackConfig.resolve.alias || {};
+        delete webpackConfig.resolve.alias['remotion'];
+        webpackConfig.resolve.alias['remotion$'] = path.resolve(__dirname, 'lib/safe-remotion.js');
 
         // Also add to loader resolution
         webpackConfig.resolveLoader = webpackConfig.resolveLoader || {};
         webpackConfig.resolveLoader.modules = [
-          rendererNodeModules,
           ...(webpackConfig.resolveLoader.modules || ['node_modules']),
+          rendererNodeModules,
         ];
 
         return webpackConfig;
@@ -165,11 +185,17 @@ async function main() {
     clearProgress();
     success('Bundle complete');
 
+    // Find an available port to avoid conflict with Next.js dev server (port 3000).
+    // Remotion's default range is 3000-3100, which collides with the Next.js dev server.
+    const selectPort = await findAvailablePort();
+    log('Using port', String(selectPort));
+
     // Select composition
     log('Selecting composition...');
     const composition = await selectComposition({
       serveUrl: bundleLocation,
       id: config.id,
+      port: selectPort,
     });
     success(`Selected: ${composition.id}`);
 
@@ -178,6 +204,10 @@ async function main() {
     console.log('');
     log('Rendering video...');
     console.log(`    ${durationInFrames} frames at ${config.fps}fps`);
+
+    // Find a fresh port for renderMedia (selectComposition's server may not have
+    // fully released its port yet)
+    const renderPort = await findAvailablePort();
 
     await renderMedia({
       composition: {
@@ -190,6 +220,7 @@ async function main() {
       serveUrl: bundleLocation,
       codec: 'h264',
       outputLocation: outputPath,
+      port: renderPort,
       onProgress: ({ progress: p }) => {
         progress(`Rendering: ${Math.round(p * 100)}%`);
       },

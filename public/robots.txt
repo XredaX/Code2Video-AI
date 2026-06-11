@@ -1,0 +1,3 @@
+# AI Video Editor — block all crawlers (this is a private tool, not a public website)
+User-agent: *
+Disallow: /

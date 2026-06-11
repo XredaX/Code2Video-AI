@@ -1,15 +1,17 @@
 {
-  "name": "temp-app",
-  "version": "0.1.0",
+  "name": "ai-video-editor",
+  "version": "1.0.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "postinstall": "cd renderer && npm install"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "@monaco-editor/react": "^4.7.0",
     "lucide-react": "^1.17.0",
     "next": "^15.5.19",
     "react": "^19.2.7",
