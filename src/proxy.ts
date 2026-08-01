@@ -9,7 +9,14 @@ const UUID_V4_REGEX =
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 
 function isLoopbackRequest(request: NextRequest): boolean {
-  return LOOPBACK_HOSTS.has(request.nextUrl.hostname.toLowerCase());
+  const host = request.headers.get('host');
+  if (!host) return false;
+  try {
+    const hostname = new URL(`http://${host}`).hostname.toLowerCase();
+    return LOOPBACK_HOSTS.has(hostname);
+  } catch {
+    return false;
+  }
 }
 
 export function proxy(request: NextRequest) {
