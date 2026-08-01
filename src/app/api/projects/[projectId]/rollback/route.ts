@@ -11,12 +11,12 @@ import { renderKey } from '@/lib/render-tracker';
 import { assertUUID } from '@/lib/validate';
 
 function cleanupFutureAssets(projectDir: string, userCount: number, assistantCount: number): void {
-  const attachmentsDir = path.join(projectDir, 'attachments');
+  const attachmentsDir = path.join(/* turbopackIgnore: true */ projectDir, 'attachments');
   if (fs.existsSync(attachmentsDir)) {
     for (const file of fs.readdirSync(attachmentsDir)) {
       const match = file.match(/^turn_(\d+)\./);
       if (match && Number(match[1]) >= userCount) {
-        try { fs.unlinkSync(path.join(attachmentsDir, file)); } catch (error) {
+        try { fs.unlinkSync(path.join(/* turbopackIgnore: true */ attachmentsDir, file)); } catch (error) {
           console.error('Attachment cleanup error:', error);
         }
       }
@@ -26,7 +26,7 @@ function cleanupFutureAssets(projectDir: string, userCount: number, assistantCou
   for (const file of fs.readdirSync(projectDir)) {
     const match = file.match(/^output_v(\d+)\.mp4$/);
     if (match && Number(match[1]) > assistantCount) {
-      try { fs.unlinkSync(path.join(projectDir, file)); } catch (error) {
+      try { fs.unlinkSync(path.join(/* turbopackIgnore: true */ projectDir, file)); } catch (error) {
         console.error('Video cleanup error:', error);
       }
     }
@@ -66,20 +66,20 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
         }
       }
 
-      const outputPath = path.join(projectDir, 'output.mp4');
+      const outputPath = path.join(/* turbopackIgnore: true */ projectDir, 'output.mp4');
       if (!lastCodeBlock) {
         saveProjectHistory(sid, projectId, newHistory);
         for (const file of ['video.tsx', 'output.mp4']) {
-          try { fs.unlinkSync(path.join(projectDir, file)); } catch {}
+          try { fs.unlinkSync(path.join(/* turbopackIgnore: true */ projectDir, file)); } catch {}
         }
         cleanupFutureAssets(projectDir, userCount, assistantCount);
         return NextResponse.json({ success: true, history: newHistory, code: '', videoUrl: null });
       }
 
       const renderId = randomUUID();
-      const stagedInputPath = path.join(projectDir, `.render-${renderId}.tsx`);
-      const stagedOutputPath = path.join(projectDir, `.render-${renderId}.mp4`);
-      const versionedOutputPath = path.join(projectDir, `output_v${assistantCount}.mp4`);
+      const stagedInputPath = path.join(/* turbopackIgnore: true */ projectDir, `.render-${renderId}.tsx`);
+      const stagedOutputPath = path.join(/* turbopackIgnore: true */ projectDir, `.render-${renderId}.mp4`);
+      const versionedOutputPath = path.join(/* turbopackIgnore: true */ projectDir, `output_v${assistantCount}.mp4`);
 
       try {
         writeFileAtomic(stagedInputPath, lastCodeBlock);

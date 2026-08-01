@@ -54,6 +54,7 @@ async function renderInDocker(request: RenderRequest, projectDir: string): Promi
     '--cpus', '2',
     '--memory', '2g',
     '--tmpfs', '/tmp:rw,nosuid,size=2g',
+    '--tmpfs', '/app/node_modules/.cache:rw,nosuid,nodev,noexec,size=256m,mode=1777',
     '--mount', `type=bind,source=${projectDir},target=/input,readonly`,
     '--mount', `type=bind,source=${projectDir},target=/output`,
     image,

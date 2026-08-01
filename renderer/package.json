@@ -12,7 +12,6 @@
     "@react-three/fiber": "^9.6.1",
     "@remotion/bundler": "4.0.503",
     "@remotion/cli": "4.0.503",
-    "@remotion/compositor-win32-x64-msvc": "4.0.503",
     "@remotion/gif": "4.0.503",
     "@remotion/google-fonts": "4.0.503",
     "@remotion/lottie": "4.0.503",
@@ -34,7 +33,7 @@
     "remotion": "4.0.503",
     "three": "^0.169.0",
     "typescript": "^5.0.0",
-    "zod": "^3.23.0"
+    "zod": "4.4.3"
   },
   "optionalDependencies": {
     "@remotion/compositor-darwin-arm64": "4.0.503",
