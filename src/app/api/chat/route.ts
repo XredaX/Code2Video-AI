@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { getProjectHistory, saveProjectHistory, saveProjectCode, getProjectDir, getProjectCode } from '@/lib/projectManager';
+import { getProjectHistory, saveProjectHistory, saveProjectCode, getProjectDir } from '@/lib/projectManager';
 import { assertGeminiModelId, assertUUID, validateImageUpload } from '@/lib/validate';
 import fs from 'fs';
 import path from 'path';
@@ -9,6 +9,8 @@ import { withRetry } from '@/lib/gemini-retry';
 import { withProjectLock, projectLockKey } from '@/lib/project-lock';
 import { renderKey } from '@/lib/render-tracker';
 import { renderProject } from '@/lib/render-runner';
+import { copyFileAtomic, writeFileAtomic } from '@/lib/atomic-file';
+import { randomUUID } from 'crypto';
 
 // Max image size: 10 MB (base64 adds ~33% overhead, so 10MB binary ≈ 13.4MB base64)
 const MAX_MESSAGE_LENGTH = 20_000;
@@ -46,9 +48,6 @@ export async function POST(req: Request) {
     }
 
     const validatedImage = validateImageUpload(image);
-
-    // Load history snapshot for building the chat context (read-only at this point)
-    const historySnapshot = getProjectHistory(sid, projectId);
 
     // Read and combine all local agent SKILL.md instructions dynamically
     let systemInstruction = 'You are an expert Remotion video developer. Generate a production-ready TSX file based on the user description.';
@@ -109,6 +108,12 @@ export async function POST(req: Request) {
     }
     const model = genAI.getGenerativeModel({ model: selectedModel, systemInstruction });
 
+    const projectDir = getProjectDir(sid, projectId);
+    const lockKey = projectLockKey(sid, projectId);
+
+    return await withProjectLock(lockKey, async () => {
+    const historySnapshot = getProjectHistory(sid, projectId);
+
     const chatHistory = historySnapshot.map((msg: any) => {
       const parts: any[] = [];
       if (msg.role === 'user' && msg.image) {
@@ -154,15 +159,13 @@ export async function POST(req: Request) {
       promptMessage = `${message}\n\n[System Requirement]: For this video generation, you MUST use these exact compositionConfig settings in your code:\n- width: ${width}\n- height: ${height}\n- durationInSeconds: ${durationInstruction} (and set durationInSeconds as a literal number in compositionConfig, e.g. durationInSeconds: ${duration === 'auto' ? '[AI chosen number]' : duration})\nEnsure all layout mathematics, position coordinates, font sizes, and elements scale cleanly to fit this target resolution (${width}x${height}).`;
     }
 
-    // Save reference image if supplied
+    // Stage the attachment path. Commit the file only after this turn succeeds.
     let attachmentUrl = '';
+    let attachmentPath = '';
     if (validatedImage) {
       const turnIndex = historySnapshot.filter((m: any) => m.role === 'user').length;
-      const attachmentsDir = path.join(process.cwd(), 'projects', sid, projectId, 'attachments');
-      if (!fs.existsSync(attachmentsDir)) fs.mkdirSync(attachmentsDir, { recursive: true });
       const filename = `turn_${turnIndex}.${validatedImage.extension}`;
-      const filePath = path.join(attachmentsDir, filename);
-      fs.writeFileSync(filePath, validatedImage.buffer);
+      attachmentPath = path.join(projectDir, 'attachments', filename);
       attachmentUrl = `/api/projects/${projectId}/attachments/${filename}`;
     }
 
@@ -188,17 +191,15 @@ export async function POST(req: Request) {
       code = responseText.replace(/^```(tsx)?\n?/i, '').replace(/```$/i, '').trim();
     }
 
-    const lockKey = projectLockKey(sid, projectId);
-
     if (code) {
       // Render can be long — do it outside the lock so it doesn't block other ops
-      const projectDir = getProjectDir(sid, projectId);
-      const inputPath = path.join(projectDir, 'video.tsx');
-
       // Snapshot version count from the read-only snapshot for naming
       const prevVersionsCount = historySnapshot.filter((m: any) => m.role === 'model').length;
       const newVersion = prevVersionsCount + 1;
       const versionedOutputPath = path.join(projectDir, `output_v${newVersion}.mp4`);
+      const renderId = randomUUID();
+      const stagedInputPath = path.join(projectDir, `.render-${renderId}.tsx`);
+      const stagedOutputPath = path.join(projectDir, `.render-${renderId}.mp4`);
 
       let fallbackWidth = 1080, fallbackHeight = 1920, fallbackDuration = 5;
       if (options) {
@@ -212,68 +213,67 @@ export async function POST(req: Request) {
       }
 
       // Save code optimistically so render can read it
-      const oldCode = getProjectCode(sid, projectId);
-      saveProjectCode(sid, projectId, code);
-
       const rk = renderKey(sid, projectId);
 
       try {
+        writeFileAtomic(stagedInputPath, code);
         await renderProject({
           key: rk,
-          inputPath,
-          outputPath: versionedOutputPath,
+          inputPath: stagedInputPath,
+          outputPath: stagedOutputPath,
           width: fallbackWidth,
           height: fallbackHeight,
           durationInSeconds: fallbackDuration,
         });
 
-        fs.copyFileSync(versionedOutputPath, path.join(projectDir, 'output.mp4'));
+        saveProjectCode(sid, projectId, code);
+        copyFileAtomic(stagedOutputPath, versionedOutputPath);
+        copyFileAtomic(stagedOutputPath, path.join(projectDir, 'output.mp4'));
+        if (validatedImage && attachmentPath) {
+          fs.mkdirSync(path.dirname(attachmentPath), { recursive: true });
+          writeFileAtomic(attachmentPath, validatedImage.buffer);
+        }
         videoUrl = `/api/video/${projectId}`;
 
-        // --- Locked write: re-read fresh history and append atomically ---
-        await withProjectLock(lockKey, () => {
-          const freshHistory = getProjectHistory(sid, projectId);
-          const userMsg: any = { role: 'user', content: message };
-          if (attachmentUrl) userMsg.image = attachmentUrl;
-          freshHistory.push(userMsg);
-          freshHistory.push({ role: 'model', content: responseText });
-          saveProjectHistory(sid, projectId, freshHistory);
-          return Promise.resolve();
-        });
+        const userMsg: any = { role: 'user', content: message };
+        if (attachmentUrl) userMsg.image = attachmentUrl;
+        historySnapshot.push(userMsg);
+        historySnapshot.push({ role: 'model', content: responseText });
+        saveProjectHistory(sid, projectId, historySnapshot);
       } catch (renderError: any) {
         // Detect if the render was cancelled by the user
         const wasCancelled = renderError.killed || renderError.signal === 'SIGTERM' || renderError.signal === 'SIGKILL';
 
         if (wasCancelled) {
           console.log('Render cancelled by user for project:', projectId);
-          if (oldCode) saveProjectCode(sid, projectId, oldCode);
           return NextResponse.json({ error: 'Render cancelled by user.' }, { status: 499 });
         }
 
         console.error('Render failed:', renderError);
-        if (oldCode) saveProjectCode(sid, projectId, oldCode);
-        else { try { fs.unlinkSync(inputPath); } catch (_) {} }
-
         return NextResponse.json({
           error: 'Code generated but rendering failed',
           details: renderError.stderr || renderError.stdout || renderError.message,
           code,
         }, { status: 500 });
+      } finally {
+        try { fs.unlinkSync(stagedInputPath); } catch {}
+        try { fs.unlinkSync(stagedOutputPath); } catch {}
       }
     } else {
       // No code — just append the conversation turn, still locked
-      await withProjectLock(lockKey, () => {
-        const freshHistory = getProjectHistory(sid, projectId);
-        const userMsg: any = { role: 'user', content: message };
-        if (attachmentUrl) userMsg.image = attachmentUrl;
-        freshHistory.push(userMsg);
-        freshHistory.push({ role: 'model', content: responseText });
-        saveProjectHistory(sid, projectId, freshHistory);
-        return Promise.resolve();
-      });
+      if (validatedImage && attachmentPath) {
+        fs.mkdirSync(path.dirname(attachmentPath), { recursive: true });
+        writeFileAtomic(attachmentPath, validatedImage.buffer);
+      }
+      const userMsg: any = { role: 'user', content: message };
+      if (attachmentUrl) userMsg.image = attachmentUrl;
+      historySnapshot.push(userMsg);
+      historySnapshot.push({ role: 'model', content: responseText });
+      saveProjectHistory(sid, projectId, historySnapshot);
     }
 
     return NextResponse.json({ message: responseText, code, videoUrl });
+    });
   } catch (error: any) {
     console.error('API Chat Error:', error);
     return NextResponse.json({ error: error.message || 'Internal Server Error' }, { status: error.status ?? 500 });

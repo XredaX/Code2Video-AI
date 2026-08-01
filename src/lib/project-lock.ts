@@ -15,14 +15,17 @@
 
 import fs from 'fs';
 import path from 'path';
+import { randomUUID } from 'crypto';
 
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
 const LOCK_RETRY_MS = 100;       // initial retry interval
-const LOCK_MAX_RETRIES = 50;     // give up after ~5 s of contention
-const STALE_LOCK_MS = 60_000;    // lock older than 60 s is considered orphaned
+const LOCK_WAIT_TIMEOUT_MS = 210_000;
+const STALE_LOCK_MS = 300_000;
+const LOCK_HEARTBEAT_MS = 30_000;
+const METADATA_LOCK_ID = '__metadata__';
 
 // ---------------------------------------------------------------------------
 // Layer 1 — In-process FIFO queue
@@ -37,12 +40,18 @@ const queue = new Map<string, Promise<void>>();
 function lockFilePath(lockKey: string): string {
   // lockKey = "sessionId:projectId"
   const [sessionId, projectId] = lockKey.split(':');
-  return path.join(process.cwd(), 'projects', sessionId, projectId, '.lock');
+  const sessionPath = path.join(/* turbopackIgnore: true */ process.cwd(), 'projects', sessionId);
+  if (projectId === METADATA_LOCK_ID) {
+    fs.mkdirSync(sessionPath, { recursive: true });
+    return path.join(sessionPath, '.projects.lock');
+  }
+  return path.join(sessionPath, projectId, '.lock');
 }
 
 interface LockMeta {
   pid: number;
   ts: number;
+  token: string;
 }
 
 function readLockMeta(fp: string): LockMeta | null {
@@ -53,30 +62,34 @@ function readLockMeta(fp: string): LockMeta | null {
   }
 }
 
-function isStale(meta: LockMeta | null): boolean {
-  if (!meta) return true;
-  return Date.now() - meta.ts > STALE_LOCK_MS;
+function isStale(fp: string): boolean {
+  try {
+    return Date.now() - fs.statSync(fp).mtimeMs > STALE_LOCK_MS;
+  } catch {
+    return true;
+  }
 }
 
 /**
  * Acquire the file-based lock.  Retries with linear back-off.
  * Steals the lock if it is stale (process crashed / was killed).
  */
-async function acquireFileLock(fp: string): Promise<void> {
-  const meta: LockMeta = { pid: process.pid, ts: Date.now() };
-  const payload = JSON.stringify(meta);
+async function acquireFileLock(fp: string): Promise<LockMeta> {
+  const meta: LockMeta = { pid: process.pid, ts: Date.now(), token: randomUUID() };
+  const startedAt = Date.now();
+  let attempt = 0;
 
-  for (let attempt = 0; attempt < LOCK_MAX_RETRIES; attempt++) {
+  while (Date.now() - startedAt < LOCK_WAIT_TIMEOUT_MS) {
     try {
       // O_EXCL makes this atomic — only one process wins
-      fs.writeFileSync(fp, payload, { flag: 'wx' });
-      return; // acquired
+      meta.ts = Date.now();
+      fs.writeFileSync(fp, JSON.stringify(meta), { flag: 'wx' });
+      return meta;
     } catch (err: any) {
       if (err.code !== 'EEXIST') throw err;
 
       // Lock exists — check if it's stale
-      const existing = readLockMeta(fp);
-      if (isStale(existing)) {
+      if (isStale(fp)) {
         // Orphaned lock: remove and retry immediately
         try { fs.unlinkSync(fp); } catch { /* race: other process already cleaned */ }
         continue;
@@ -85,23 +98,36 @@ async function acquireFileLock(fp: string): Promise<void> {
       // Still held — wait with linear back-off
       const waitMs = LOCK_RETRY_MS + attempt * 20;
       await new Promise((r) => setTimeout(r, waitMs));
+      attempt++;
     }
   }
 
   throw new Error(
-    `Could not acquire project lock after ${LOCK_MAX_RETRIES} attempts: ${fp}`
+    `Could not acquire project lock within ${LOCK_WAIT_TIMEOUT_MS}ms: ${fp}`
   );
 }
 
-function releaseFileLock(fp: string): void {
+function releaseFileLock(fp: string, owner: LockMeta): void {
   try {
     // Only delete if we still own the lock (PID matches)
     const meta = readLockMeta(fp);
-    if (meta && meta.pid === process.pid) {
+    if (meta && meta.pid === owner.pid && meta.token === owner.token) {
       fs.unlinkSync(fp);
     }
   } catch {
     // Ignore cleanup errors (file may already be gone on Windows)
+  }
+}
+
+function refreshFileLock(fp: string, owner: LockMeta): void {
+  try {
+    const current = readLockMeta(fp);
+    if (current && current.pid === owner.pid && current.token === owner.token) {
+      const now = new Date();
+      fs.utimesSync(fp, now, now);
+    }
+  } catch {
+    // Next refresh or final ownership check will detect a lost lock.
   }
 }
 
@@ -136,12 +162,15 @@ export async function withProjectLock<T>(
     await prev;
 
     // Layer 2: acquire cross-process file lock
-    await acquireFileLock(fp);
+    const owner = await acquireFileLock(fp);
+    const heartbeat = setInterval(() => refreshFileLock(fp, owner), LOCK_HEARTBEAT_MS);
+    heartbeat.unref();
 
     try {
       return await fn();
     } finally {
-      releaseFileLock(fp);
+      clearInterval(heartbeat);
+      releaseFileLock(fp, owner);
     }
   } finally {
     releaseQueue();
@@ -155,4 +184,8 @@ export async function withProjectLock<T>(
 /** Convenience key builder: combines sessionId + projectId */
 export function projectLockKey(sessionId: string, projectId: string): string {
   return `${sessionId}:${projectId}`;
+}
+
+export function metadataLockKey(sessionId: string): string {
+  return `${sessionId}:${METADATA_LOCK_ID}`;
 }
