@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { cookies } from 'next/headers';
 import { withRetry } from '@/lib/gemini-retry';
+import { assertGeminiModelId } from '@/lib/validate';
 
 export async function POST(req: Request) {
   try {
@@ -14,8 +15,11 @@ export async function POST(req: Request) {
 
     const { prompt, model: selectedModel } = await req.json();
 
-    if (!prompt) {
+    if (typeof prompt !== 'string' || !prompt.trim()) {
       return NextResponse.json({ error: 'Missing prompt' }, { status: 400 });
+    }
+    if (prompt.length > 20_000) {
+      return NextResponse.json({ error: 'Prompt is too long' }, { status: 413 });
     }
 
     const genAI = new GoogleGenerativeAI(apiKey);
@@ -27,16 +31,14 @@ Make the prompt sound like a professional design specification for a motion grap
 Keep the enhanced prompt under 4 sentences.
 Do NOT include any filler text, conversational text, or prefixes like "Here is your prompt:". Just output the enhanced prompt text directly.`;
 
-    if (!selectedModel) {
-      return NextResponse.json({ error: 'Model selection is required. Please select a model in the UI.' }, { status: 400 });
-    }
+    const modelId = assertGeminiModelId(selectedModel);
 
     const model = genAI.getGenerativeModel({
-      model: selectedModel,
+      model: modelId,
       systemInstruction,
     });
 
-    const result = await withRetry(() => model.generateContent(prompt));
+    const result = await withRetry(() => model.generateContent(prompt.trim()));
     const enhancedPrompt = result.response.text();
 
     return NextResponse.json({ enhancedPrompt });

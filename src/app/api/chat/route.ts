@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getProjectHistory, saveProjectHistory, saveProjectCode, getProjectDir, getProjectCode } from '@/lib/projectManager';
-import { assertUUID } from '@/lib/validate';
+import { assertGeminiModelId, assertUUID, validateImageUpload } from '@/lib/validate';
 import fs from 'fs';
 import path from 'path';
 import { cookies } from 'next/headers';
@@ -10,7 +10,9 @@ import { withProjectLock, projectLockKey } from '@/lib/project-lock';
 import { execTracked, renderKey } from '@/lib/render-tracker';
 
 // Max image size: 10 MB (base64 adds ~33% overhead, so 10MB binary ≈ 13.4MB base64)
-const MAX_IMAGE_BASE64_LEN = 14 * 1024 * 1024;
+const MAX_MESSAGE_LENGTH = 20_000;
+const ALLOWED_ASPECT_RATIOS = new Set(['16:9', '9:16', '4:3', '3:4', '1:1']);
+const ALLOWED_RESOLUTIONS = new Set(['720p', '1080p']);
 
 let thesvgCache = '';
 
@@ -29,21 +31,20 @@ export async function POST(req: Request) {
 
     const genAI = new GoogleGenerativeAI(apiKey);
 
-    const { projectId, message, image, options } = await req.json();
+    const { projectId, message: rawMessage, image, options } = await req.json();
 
     // --- UUID validation (Blocker 1) ---
     assertUUID(projectId, 'projectId');
 
-    if (!message) {
+    if (typeof rawMessage !== 'string' || !rawMessage.trim()) {
       return NextResponse.json({ error: 'Missing message' }, { status: 400 });
     }
-
-    // --- Image size limit (Blocker 5) ---
-    if (image?.data) {
-      if (typeof image.data !== 'string' || image.data.length > MAX_IMAGE_BASE64_LEN) {
-        return NextResponse.json({ error: 'Image too large. Maximum size is 10 MB.' }, { status: 413 });
-      }
+    const message = rawMessage.trim();
+    if (message.length > MAX_MESSAGE_LENGTH) {
+      return NextResponse.json({ error: 'Message is too long.' }, { status: 413 });
     }
+
+    const validatedImage = validateImageUpload(image);
 
     // Load history snapshot for building the chat context (read-only at this point)
     const historySnapshot = getProjectHistory(sid, projectId);
@@ -95,9 +96,15 @@ export async function POST(req: Request) {
       console.error('Failed to load dynamic skills:', err);
     }
 
-    const selectedModel = options?.model;
-    if (!selectedModel) {
-      return NextResponse.json({ error: 'Model selection is required. Please select a model in the UI.' }, { status: 400 });
+    const selectedModel = assertGeminiModelId(options?.model);
+    if (!ALLOWED_ASPECT_RATIOS.has(options?.aspectRatio) || !ALLOWED_RESOLUTIONS.has(options?.resolution)) {
+      return NextResponse.json({ error: 'Invalid render options.' }, { status: 400 });
+    }
+    if (options?.duration !== 'auto') {
+      const requestedDuration = Number(options?.duration);
+      if (!Number.isFinite(requestedDuration) || requestedDuration < 1 || requestedDuration > 15) {
+        return NextResponse.json({ error: 'Duration must be between 1 and 15 seconds.' }, { status: 400 });
+      }
     }
     const model = genAI.getGenerativeModel({ model: selectedModel, systemInstruction });
 
@@ -148,21 +155,20 @@ export async function POST(req: Request) {
 
     // Save reference image if supplied
     let attachmentUrl = '';
-    if (image?.data && image?.mimeType) {
+    if (validatedImage) {
       const turnIndex = historySnapshot.filter((m: any) => m.role === 'user').length;
       const attachmentsDir = path.join(process.cwd(), 'projects', sid, projectId, 'attachments');
       if (!fs.existsSync(attachmentsDir)) fs.mkdirSync(attachmentsDir, { recursive: true });
-      const ext = image.mimeType.split('/')[1] === 'jpeg' ? 'jpg' : image.mimeType.split('/')[1];
-      const filename = `turn_${turnIndex}.${ext}`;
+      const filename = `turn_${turnIndex}.${validatedImage.extension}`;
       const filePath = path.join(attachmentsDir, filename);
-      fs.writeFileSync(filePath, Buffer.from(image.data, 'base64'));
+      fs.writeFileSync(filePath, validatedImage.buffer);
       attachmentUrl = `/api/projects/${projectId}/attachments/${filename}`;
     }
 
     // Prepare prompt parts
     const promptParts: any[] = [];
-    if (image?.data && image?.mimeType) {
-      promptParts.push({ inlineData: { mimeType: image.mimeType, data: image.data } });
+    if (validatedImage) {
+      promptParts.push({ inlineData: { mimeType: validatedImage.mimeType, data: validatedImage.data } });
     }
     promptParts.push({ text: promptMessage });
 

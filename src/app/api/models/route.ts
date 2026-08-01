@@ -66,8 +66,11 @@ export async function GET() {
   }
 
   try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`;
-    const res = await fetch(url, { next: { revalidate: 3600 } }); // cache 1 hour
+    const url = 'https://generativelanguage.googleapis.com/v1beta/models';
+    const res = await fetch(url, {
+      headers: { 'x-goog-api-key': apiKey },
+      cache: 'no-store',
+    });
 
     if (!res.ok) {
       throw new Error(`Failed to fetch models: ${res.statusText}`);

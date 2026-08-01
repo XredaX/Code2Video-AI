@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useRef, Fragment } from 'react';
 import { Play, Plus, MessageSquare, Loader2, Code2, Video, Sparkles, Copy, Check, Undo, RotateCcw, Key, Eye, EyeOff, Pencil, Image as ImageIcon, X, ChevronLeft, ChevronRight, Sliders, HelpCircle, Trash2, Square } from 'lucide-react';
-import MonacoEditor from '@monaco-editor/react';
 import styles from './page.module.css';
 
 interface Project {
