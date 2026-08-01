@@ -7,7 +7,12 @@
 
 import { type ChildProcess, execFile as _execFile } from 'child_process';
 
-const activeRenders = new Map<string, ChildProcess>();
+interface TrackedRender {
+  process: ChildProcess;
+  cancel?: () => void;
+}
+
+const activeRenders = new Map<string, TrackedRender>();
 
 /** Build a tracker key from session + project. */
 export function renderKey(sid: string, projectId: string): string {
@@ -15,14 +20,14 @@ export function renderKey(sid: string, projectId: string): string {
 }
 
 /** Register a child process for a given key. Returns the process for chaining. */
-export function trackProcess(key: string, proc: ChildProcess): ChildProcess {
+export function trackProcess(key: string, proc: ChildProcess, cancel?: () => void): ChildProcess {
   // Kill any existing render for this key first
   killProcess(key);
-  activeRenders.set(key, proc);
+  activeRenders.set(key, { process: proc, cancel });
 
   // Auto-cleanup when the process exits
   proc.once('exit', () => {
-    if (activeRenders.get(key) === proc) {
+    if (activeRenders.get(key)?.process === proc) {
       activeRenders.delete(key);
     }
   });
@@ -32,10 +37,14 @@ export function trackProcess(key: string, proc: ChildProcess): ChildProcess {
 
 /** Kill an active render process (and its entire tree on Windows). */
 export function killProcess(key: string): boolean {
-  const proc = activeRenders.get(key);
-  if (!proc) return false;
+  const tracked = activeRenders.get(key);
+  if (!tracked) return false;
 
   activeRenders.delete(key);
+
+  try { tracked.cancel?.(); } catch { /* best-effort external cleanup */ }
+
+  const proc = tracked.process;
 
   if (proc.pid == null) return false;
 
@@ -44,8 +53,7 @@ export function killProcess(key: string): boolean {
       // Kill entire process tree on Windows (render-cli.js → Remotion server → browser)
       _execFile('taskkill', ['/pid', String(proc.pid), '/T', '/F']);
     } else {
-      // Kill process group on POSIX
-      process.kill(-proc.pid, 'SIGTERM');
+      proc.kill('SIGTERM');
     }
   } catch {
     // Process may have already exited
@@ -69,16 +77,21 @@ export function execTracked(
   key: string,
   command: string,
   args: string[],
-  options: { timeout?: number } = {},
+  options: { timeout?: number; cancel?: () => void } = {},
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = _execFile(command, args, options, (err, stdout, stderr) => {
+    const child = _execFile(command, args, {
+      timeout: options.timeout,
+    }, (err, stdout, stderr) => {
       if (err) {
+        if (err.killed || err.signal) {
+          try { options.cancel?.(); } catch { /* best-effort external cleanup */ }
+        }
         reject(Object.assign(err, { stdout, stderr }));
       } else {
         resolve({ stdout: stdout ?? '', stderr: stderr ?? '' });
       }
     });
-    trackProcess(key, child);
+    trackProcess(key, child, options.cancel);
   });
 }

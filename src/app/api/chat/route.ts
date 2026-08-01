@@ -7,7 +7,8 @@ import path from 'path';
 import { cookies } from 'next/headers';
 import { withRetry } from '@/lib/gemini-retry';
 import { withProjectLock, projectLockKey } from '@/lib/project-lock';
-import { execTracked, renderKey } from '@/lib/render-tracker';
+import { renderKey } from '@/lib/render-tracker';
+import { renderProject } from '@/lib/render-runner';
 
 // Max image size: 10 MB (base64 adds ~33% overhead, so 10MB binary ≈ 13.4MB base64)
 const MAX_MESSAGE_LENGTH = 20_000;
@@ -199,10 +200,6 @@ export async function POST(req: Request) {
       const newVersion = prevVersionsCount + 1;
       const versionedOutputPath = path.join(projectDir, `output_v${newVersion}.mp4`);
 
-      const portableNode = path.join(process.cwd(), 'node', 'node.exe');
-      const nodeExe = fs.existsSync(portableNode) ? portableNode : 'node';
-      const renderCliPath = path.join(process.cwd(), 'renderer', 'render-cli.js');
-
       let fallbackWidth = 1080, fallbackHeight = 1920, fallbackDuration = 5;
       if (options) {
         const { aspectRatio, duration, resolution } = options;
@@ -221,14 +218,14 @@ export async function POST(req: Request) {
       const rk = renderKey(sid, projectId);
 
       try {
-        await execTracked(rk, nodeExe, [
-          renderCliPath,
-          `--input=${inputPath}`,
-          `--output=${versionedOutputPath}`,
-          `--width=${fallbackWidth}`,
-          `--height=${fallbackHeight}`,
-          `--durationInSeconds=${fallbackDuration}`,
-        ], { timeout: 180_000 });
+        await renderProject({
+          key: rk,
+          inputPath,
+          outputPath: versionedOutputPath,
+          width: fallbackWidth,
+          height: fallbackHeight,
+          durationInSeconds: fallbackDuration,
+        });
 
         fs.copyFileSync(versionedOutputPath, path.join(projectDir, 'output.mp4'));
         videoUrl = `/api/video/${projectId}`;

@@ -221,6 +221,9 @@ async function main() {
       codec: 'h264',
       outputLocation: outputPath,
       port: renderPort,
+      chromiumOptions: {
+        enableMultiProcessOnLinux: true,
+      },
       onProgress: ({ progress: p }) => {
         progress(`Rendering: ${Math.round(p * 100)}%`);
       },

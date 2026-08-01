@@ -4,7 +4,8 @@ import { getProjectHistory, saveProjectHistory, saveProjectCode, getProjectDir, 
 import { assertUUID } from '@/lib/validate';
 import fs from 'fs';
 import path from 'path';
-import { execTracked, renderKey } from '@/lib/render-tracker';
+import { renderKey } from '@/lib/render-tracker';
+import { renderProject } from '@/lib/render-runner';
 
 export async function POST(req: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
@@ -66,17 +67,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
       saveProjectCode(sid, projectId, lastCodeBlock);
       const versionedOutputPath = path.join(projectDir, `output_v${assistantMsgCount}.mp4`);
 
-      const portableNode = path.join(process.cwd(), 'node', 'node.exe');
-      const nodeExe = fs.existsSync(portableNode) ? portableNode : 'node';
-      const renderCliPath = path.join(process.cwd(), 'renderer', 'render-cli.js');
-
       try {
         const rk = renderKey(sid, projectId);
-        await execTracked(rk, nodeExe, [
-          renderCliPath,
-          `--input=${inputPath}`,
-          `--output=${versionedOutputPath}`,
-        ], { timeout: 180_000 });
+        await renderProject({ key: rk, inputPath, outputPath: versionedOutputPath });
         fs.copyFileSync(versionedOutputPath, outputPath);
       } catch (renderError: any) {
         const wasCancelled = renderError.killed || renderError.signal === 'SIGTERM' || renderError.signal === 'SIGKILL';

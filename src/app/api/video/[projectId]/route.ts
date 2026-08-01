@@ -4,7 +4,8 @@ import { assertUUID, assertPositiveInt } from '@/lib/validate';
 import fs from 'fs';
 import path from 'path';
 import { Readable } from 'stream';
-import { execTracked, renderKey } from '@/lib/render-tracker';
+import { renderKey } from '@/lib/render-tracker';
+import { renderProject } from '@/lib/render-runner';
 
 export async function GET(req: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
@@ -37,17 +38,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ projectI
                 const tempInputPath = path.join(process.cwd(), 'projects', sid, projectId, `video_v${version}.tsx`);
                 fs.writeFileSync(tempInputPath, codeToCompile);
 
-                const portableNode = path.join(process.cwd(), 'node', 'node.exe');
-                const nodeExe = fs.existsSync(portableNode) ? portableNode : 'node';
-                const renderCliPath = path.join(process.cwd(), 'renderer', 'render-cli.js');
-
                 try {
                   const rk = renderKey(sid, projectId);
-                  await execTracked(rk, nodeExe, [
-                    renderCliPath,
-                    `--input=${tempInputPath}`,
-                    `--output=${versionedPath}`,
-                  ], { timeout: 180_000 });
+                  await renderProject({ key: rk, inputPath: tempInputPath, outputPath: versionedPath });
                 } finally {
                   // Always clean up temp file
                   try { fs.unlinkSync(tempInputPath); } catch (_) {}
