@@ -15,7 +15,7 @@ export interface ProjectMetadata {
   updatedAt: number;
 }
 
-const ROOT_PROJECTS_DIR = path.join(process.cwd(), 'projects');
+const ROOT_PROJECTS_DIR = path.join(/* turbopackIgnore: true */ process.cwd(), 'projects');
 
 // ---------------------------------------------------------------------------
 // Per-session paths

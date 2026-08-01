@@ -25,7 +25,7 @@ function validateTsxFile(filePath) {
   // Check readable
   try {
     fs.accessSync(filePath, fs.constants.R_OK);
-  } catch (e) {
+  } catch {
     throw new Error(`Cannot read file: ${filePath}`);
   }
 

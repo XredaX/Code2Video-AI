@@ -1,235 +1,26 @@
 'use client';
 
-import { useState, useEffect, useRef, Fragment } from 'react';
-import { Play, Plus, MessageSquare, Loader2, Code2, Video, Sparkles, Copy, Check, Undo, RotateCcw, Key, Eye, EyeOff, Pencil, Image as ImageIcon, X, ChevronLeft, ChevronRight, Sliders, HelpCircle, Trash2, Square } from 'lucide-react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import Image from 'next/image';
+import { Play, MessageSquare, Loader2, Code2, Sparkles, Copy, Check, Undo, RotateCcw, Pencil, Image as ImageIcon, X, Sliders, Square } from 'lucide-react';
 import styles from './page.module.css';
-
-interface Project {
-  id: string;
-  name: string;
-  createdAt: number;
-}
-
-interface Message {
-  role: 'user' | 'model';
-  content: string;
-  image?: string;
-}
-
-interface ConstantVar {
-  name: string;
-  value: string | number;
-  type: 'string' | 'color' | 'number';
-  raw: string;
-}
-
-const parseConstants = (codeStr: string): ConstantVar[] => {
-  if (!codeStr) return [];
-  const vars: ConstantVar[] = [];
-  const regex = /const\s+([a-zA-Z0-9_]+)\s*=\s*(?:'([^']*)'|"([^"]*)"|`([^`]*)`|(-?\d+(?:\.\d+)?));?/g;
-  
-  let match;
-  while ((match = regex.exec(codeStr)) !== null) {
-    const name = match[1];
-    if (['inter', 'fps', 'durationInFrames', 'width', 'height', 'frame'].includes(name)) {
-      continue;
-    }
-    
-    let value: string | number = '';
-    let type: 'string' | 'color' | 'number' = 'string';
-    
-    if (match[2] !== undefined) {
-      value = match[2];
-    } else if (match[3] !== undefined) {
-      value = match[3];
-    } else if (match[4] !== undefined) {
-      value = match[4];
-    } else if (match[5] !== undefined) {
-      value = Number(match[5]);
-      type = 'number';
-    }
-    
-    if (type !== 'number' && typeof value === 'string') {
-      if (/^#(?:[0-9a-fA-F]{3}){1,2}$/.test(value)) {
-        type = 'color';
-      }
-    }
-    
-    if (!vars.some(v => v.name === name)) {
-      vars.push({ name, value, type, raw: match[0] });
-    }
-  }
-  return vars;
-};
-
-const updateConstantInCode = (codeStr: string, name: string, newValue: string | number): string => {
-  const regex = new RegExp(`(const\\s+${name}\\s*=\\s*)(?:'[^']*'|"[^"]*"|\`[^\`]*\`|-?\\d+(?:\\.\\d+)?)(;?)`);
-  let formattedValue = '';
-  if (typeof newValue === 'number') {
-    formattedValue = String(newValue);
-  } else {
-    formattedValue = `'${newValue.replace(/'/g, "\\'")}'`;
-  }
-  return codeStr.replace(regex, `$1${formattedValue}$2`);
-};
-
-const formatLabel = (name: string): string => {
-  const result = name.replace(/([A-Z])/g, ' $1');
-  return result.charAt(0).toUpperCase() + result.slice(1);
-};
-
-const clamp = (val: number, min: number, max: number) => Math.max(min, Math.min(max, val));
-
-const getDurationInSeconds = (codeStr: string): number => {
-  if (!codeStr) return 5;
-  const match = codeStr.match(/durationInSeconds\s*:\s*(\d+(?:\.\d+)?)/);
-  if (match) {
-    return parseFloat(match[1]);
-  }
-  return 5;
-};
-
-interface AudioTrackInfo {
-  src: string;
-  volume: number;
-}
-
-const parseAudioTrack = (codeStr: string): AudioTrackInfo | null => {
-  if (!codeStr) return null;
-  const match = codeStr.match(/<Audio\s+src="([^"]*)"\s+volume=\{(\d+(?:\.\d+)?)\}\s*\/?>/);
-  if (match) {
-    return {
-      src: match[1],
-      volume: parseFloat(match[2])
-    };
-  }
-  return null;
-};
-
-const updateAudioInCode = (codeStr: string, audioUrl: string, volume = 0.5): string => {
-  let newCode = codeStr;
-  
-  if (!newCode.includes('Audio') && newCode.includes('from \'remotion\'')) {
-    newCode = newCode.replace(
-      /(import\s+\{[^}]*)(from\s+'remotion')/,
-      (match, p1, p2) => {
-        if (!p1.includes('Audio')) {
-          const cleanP1 = p1.trim();
-          const separator = cleanP1.endsWith(',') ? '' : ',';
-          return `${cleanP1}${separator} Audio } ${p2}`;
-        }
-        return match;
-      }
-    );
-  }
-  
-  const audioRegex = /<Audio\s+src="[^"]*"\s+volume=\{(\d+(?:\.\d+)?)\}\s*\/?>/;
-  if (audioRegex.test(newCode)) {
-    newCode = newCode.replace(audioRegex, `<Audio src="${audioUrl}" volume={${volume}} />`);
-  } else {
-    const absoluteFillClose = '</AbsoluteFill>';
-    if (newCode.includes(absoluteFillClose)) {
-      const idx = newCode.lastIndexOf(absoluteFillClose);
-      newCode = newCode.substring(0, idx) + `  <Audio src="${audioUrl}" volume={${volume}} />\n    ` + newCode.substring(idx);
-    } else {
-      const defaultExport = 'export default';
-      if (newCode.includes(defaultExport)) {
-        newCode = newCode.replace(defaultExport, `<Audio src="${audioUrl}" volume={${volume}} />\n\nexport default`);
-      }
-    }
-  }
-  return newCode;
-};
-
-const removeAudioFromCode = (codeStr: string): string => {
-  const audioRegex = /<Audio\s+src="[^"]*"\s+volume=\{(\d+(?:\.\d+)?)\}\s*\/?>\n?/g;
-  return codeStr.replace(audioRegex, '');
-};
-
-const SOUND_LIBRARY = [
-  { id: 'ambient', name: 'Ambient Corporate', sub: 'Smooth backing track', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3' },
-  { id: 'synthwave', name: 'Cyberpunk Synthwave', sub: 'Upbeat neon theme', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3' },
-  { id: 'upbeat', name: 'Pop Beat', sub: 'Catchy and energetic', url: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3' },
-  { id: 'notification', name: 'Bell Chime SFX', sub: 'Simple pop notification', url: 'https://assets.mixkit.co/active_storage/sfx/911/911-84.wav' },
-  { id: 'swoosh', name: 'Swoosh SFX', sub: 'Air transition swoosh', url: 'https://assets.mixkit.co/active_storage/sfx/2568/2568-84.wav' }
-];
-
-interface TimelineClip {
-  id: string;
-  label: string;
-  startFrame: number;
-  endFrame: number;
-  startVarName: string;
-  endVarName: string;
-}
-
-const getTimelineClips = (constants: ConstantVar[], totalFrames: number): TimelineClip[] => {
-  const clips: TimelineClip[] = [];
-  constants.forEach(c => {
-    const name = c.name;
-    const value = typeof c.value === 'number' ? c.value : 0;
-    
-    let prefix = '';
-    let isStart = false;
-    let isEnd = false;
-    
-    if (name.endsWith('StartFrame')) {
-      prefix = name.slice(0, -10);
-      isStart = true;
-    } else if (name.endsWith('Start')) {
-      prefix = name.slice(0, -5);
-      isStart = true;
-    } else if (name.endsWith('EndFrame')) {
-      prefix = name.slice(0, -8);
-      isEnd = true;
-    } else if (name.endsWith('End')) {
-      prefix = name.slice(0, -3);
-      isEnd = true;
-    }
-    
-    if (!prefix) return;
-    
-    let clip = clips.find(clip => clip.id === prefix);
-    if (!clip) {
-      clip = {
-        id: prefix,
-        label: formatLabel(prefix),
-        startFrame: 0,
-        endFrame: totalFrames,
-        startVarName: '',
-        endVarName: ''
-      };
-      clips.push(clip);
-    }
-    
-    if (isStart) {
-      clip.startFrame = value;
-      clip.startVarName = name;
-    } else if (isEnd) {
-      clip.endFrame = value;
-      clip.endVarName = name;
-    }
-  });
-  
-  return clips.filter(c => c.startVarName && c.endVarName);
-};
-
-const getClipColor = (id: string): string => {
-  const lower = id.toLowerCase();
-  if (lower.includes('text') || lower.includes('title') || lower.includes('subtitle') || lower.includes('caption') || lower.includes('header') || lower.includes('heading')) {
-    return '#8b5cf6'; // Purple / Violet
-  }
-  if (lower.includes('image') || lower.includes('video') || lower.includes('bg') || lower.includes('background') || lower.includes('media') || lower.includes('photo') || lower.includes('pic')) {
-    return '#ec4899'; // Pink / Rose
-  }
-  if (lower.includes('logo') || lower.includes('icon') || lower.includes('animation') || lower.includes('effect') || lower.includes('particle')) {
-    return '#06b6d4'; // Cyan
-  }
-  if (lower.includes('transition') || lower.includes('scene') || lower.includes('slide') || lower.includes('card')) {
-    return '#f59e0b'; // Amber / Gold
-  }
-  return '#3b82f6'; // Professional Blue default
-};
+import { ApiKeyModal } from '@/components/editor/ApiKeyModal';
+import { ProjectSidebar } from '@/components/editor/ProjectSidebar';
+import { StudioTimeline } from '@/components/editor/StudioTimeline';
+import { WorkspaceHeader } from '@/components/editor/WorkspaceHeader';
+import {
+  SOUND_LIBRARY,
+  clamp,
+  formatLabel,
+  getDurationInSeconds,
+  parseAudioTrack,
+  parseConstants,
+  removeAudioFromCode,
+  updateAudioInCode,
+  updateConstantInCode,
+  type Message,
+  type Project,
+} from '@/components/editor/editor-utils';
 
 
 export default function Home() {
@@ -833,14 +624,14 @@ export default function Home() {
     }
   };
 
-  const toggleStudioPlay = () => {
+  const toggleStudioPlay = useCallback(() => {
     if (!studioVideoRef.current) return;
     if (isPlaying) {
       studioVideoRef.current.pause();
     } else {
       studioVideoRef.current.play().catch(e => console.error(e));
     }
-  };
+  }, [isPlaying]);
 
   const handleTimelineMouseDown = (
     e: React.MouseEvent,
@@ -1004,15 +795,15 @@ export default function Home() {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const modelMessages = messages.filter(m => m.role === 'model');
+  const modelMessages = useMemo(() => messages.filter((message) => message.role === 'model'), [messages]);
   const versionsCount = modelMessages.length;
 
-  const getCodeForVersion = (versionIdx: number): string => {
+  const getCodeForVersion = useCallback((versionIdx: number): string => {
     const msg = modelMessages[versionIdx];
     if (!msg) return '';
     const tsxMatch = msg.content.match(/```tsx\s*([\s\S]*?)\s*```/);
     return tsxMatch && tsxMatch[1] ? tsxMatch[1] : '';
-  };
+  }, [modelMessages]);
 
   let displayedMessages = messages;
   if (selectedVersionIdx !== null && selectedVersionIdx < versionsCount - 1) {
@@ -1056,7 +847,7 @@ export default function Home() {
     } else {
       setEditorCode(code);
     }
-  }, [selectedVersionIdx, code, versionsCount, messages]);
+  }, [selectedVersionIdx, code, versionsCount, getCodeForVersion]);
 
   // Synchronize playhead state with the studio preview video playback
   useEffect(() => {
@@ -1119,7 +910,7 @@ export default function Home() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentFrame, editorCode, isPlaying, activeTab]);
+  }, [currentFrame, editorCode, activeTab, toggleStudioPlay]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -1134,165 +925,48 @@ export default function Home() {
 
   return (
     <div className={styles.appContainer}>
-      {/* Sidebar */}
-      <aside className={`${styles.sidebar} ${sidebarCollapsed ? styles.collapsed : ''}`}>
-
-        <div className={styles.sidebarContent}>
-          <button className={`${styles.btn} ${styles.btnOutline}`} onClick={createProject} style={{ width: '100%' }}>
-            <Plus size={14} /> New Project
-          </button>
-
-          <div className={styles.sidebarSection}>
-            <div className={styles.sidebarSectionTitle}>Projects</div>
-            <div className={styles.projectList}>
-              {projects.length === 0 ? (
-                <div style={{ padding: '0.5rem', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-                  No projects yet.
-                </div>
-              ) : (
-                projects.map(p => (
-                  <div
-                    key={p.id}
-                    className={`${styles.projectItem} ${activeProjectId === p.id ? styles.active : ''}`}
-                    onClick={() => { if (renamingProjectId !== p.id) setActiveProjectId(p.id); }}
-                    onDoubleClick={(e) => {
-                      e.stopPropagation();
-                      setRenamingProjectId(p.id);
-                      setRenameValue(p.name);
-                      setTimeout(() => renameInputRef.current?.select(), 30);
-                    }}
-                    style={{ position: 'relative' }}
-                  >
-                    <Video size={14} className={styles.projectIcon} style={{ flexShrink: 0 }} />
-                    {renamingProjectId === p.id ? (
-                      <input
-                        ref={renameInputRef}
-                        value={renameValue}
-                        onChange={e => setRenameValue(e.target.value)}
-                        onBlur={() => handleRenameProject(p.id, renameValue)}
-                        onKeyDown={e => {
-                          if (e.key === 'Enter') handleRenameProject(p.id, renameValue);
-                          if (e.key === 'Escape') setRenamingProjectId(null);
-                        }}
-                        onClick={e => e.stopPropagation()}
-                        className={styles.projectRenameInput}
-                        autoFocus
-                      />
-                    ) : (
-                      <span style={{ flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>
-                        {p.name}
-                      </span>
-                    )}
-                    <button
-                      className={styles.projectDeleteBtn}
-                      title="Delete project"
-                      onClick={e => { e.stopPropagation(); handleDeleteProject(p.id); }}
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Sidebar Footer (API Key settings) */}
-        <div className="sidebar-footer" style={{ padding: '1rem', borderTop: '1px solid var(--border)' }}>
-          <button 
-            className={`${styles.btn} ${styles.btnOutline}`} 
-          onClick={() => { setTempApiKey(''); setShowPassword(false); setShowApiKeyModal(true); }}
-            style={{ width: '100%', fontSize: '0.8rem', gap: '0.4rem', padding: '0.4rem' }}
-            title="Configure Gemini API Key"
-          >
-            <Key size={14} />
-            <span>{hasApiKey ? '✓ API Key Set' : 'Set API Key'}</span>
-          </button>
-        </div>
-      </aside>
-
-      {/* Sidebar Toggle Button */}
-      <button 
-        className={`${styles.sidebarToggleBtn} ${sidebarCollapsed ? styles.collapsed : ''}`}
-        onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-        title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-      >
-        {sidebarCollapsed ? <ChevronRight size={12} /> : <ChevronLeft size={12} />}
-      </button>
+      <ProjectSidebar
+        projects={projects}
+        activeProjectId={activeProjectId}
+        collapsed={sidebarCollapsed}
+        renamingProjectId={renamingProjectId}
+        renameValue={renameValue}
+        renameInputRef={renameInputRef}
+        hasApiKey={hasApiKey}
+        onCreate={createProject}
+        onSelect={setActiveProjectId}
+        onBeginRename={(project) => {
+          setRenamingProjectId(project.id);
+          setRenameValue(project.name);
+          setTimeout(() => renameInputRef.current?.select(), 30);
+        }}
+        onRenameValueChange={setRenameValue}
+        onCommitRename={handleRenameProject}
+        onCancelRename={() => setRenamingProjectId(null)}
+        onDelete={handleDeleteProject}
+        onOpenSettings={() => {
+          setTempApiKey('');
+          setShowPassword(false);
+          setShowApiKeyModal(true);
+        }}
+        onToggle={() => setSidebarCollapsed((collapsed) => !collapsed)}
+      />
 
       {/* Main Content Area */}
       <main className={styles.mainContent}>
-        <div className={styles.topBar}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', paddingLeft: sidebarCollapsed ? '1.5rem' : '0rem', transition: 'padding-left 0.3s cubic-bezier(0.4, 0, 0.2, 1)' }}>
-            <h2>{activeProjectId ? projects.find(p => p.id === activeProjectId)?.name : 'Workspace'}</h2>
-          </div>
-          {activeProjectId && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-              {versionsCount > 0 && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Version:</span>
-                  <select
-                    value={selectedVersionIdx !== null ? selectedVersionIdx : versionsCount - 1}
-                    onChange={e => {
-                      const val = Number(e.target.value);
-                      setSelectedVersionIdx(val === versionsCount - 1 ? null : val);
-                    }}
-                    disabled={loading}
-                    className={styles.controlSelect}
-                    style={{ fontSize: '0.75rem', padding: '0.2rem 0.4rem', height: 'auto', cursor: 'pointer' }}
-                  >
-                    {modelMessages.map((_, idx) => (
-                      <option key={idx} value={idx}>
-                        {`v${idx + 1}${idx === versionsCount - 1 ? ' (latest)' : ''}`}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-              {messages.length >= 2 && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  {selectedVersionIdx !== null && selectedVersionIdx < versionsCount - 1 ? (
-                    <button
-                      className={styles.btnAction}
-                      style={{ backgroundColor: 'var(--accent-primary)', color: '#fff', borderColor: 'transparent' }}
-                      onClick={() => handleRevertToVersion(selectedVersionIdx)}
-                      disabled={loading}
-                      title={`Make Version ${selectedVersionIdx + 1} the active current version`}
-                    >
-                      <Undo size={12} />
-                      <span>Revert to this version</span>
-                    </button>
-                  ) : (
-                    <>
-                      <button
-                        className={styles.btnAction}
-                        onClick={handleRollback}
-                        disabled={loading}
-                        title="Rollback the last changes"
-                      >
-                        <Undo size={12} />
-                        <span>Rollback</span>
-                      </button>
-                      <button
-                        className={styles.btnAction}
-                        onClick={handleRetry}
-                        disabled={loading}
-                        title="Re-generate the last prompt"
-                      >
-                        <RotateCcw size={12} />
-                        <span>Retry</span>
-                      </button>
-                    </>
-                  )}
-                </div>
-              )}
-              <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                <span style={{ width: 6, height: 6, borderRadius: '50%', background: loading ? '#f59e0b' : '#10b981', display: 'inline-block' }}></span>
-                {loading ? 'Processing...' : 'Ready'}
-              </span>
-            </div>
-          )}
-        </div>
+        <WorkspaceHeader
+          projects={projects}
+          activeProjectId={activeProjectId}
+          sidebarCollapsed={sidebarCollapsed}
+          versionsCount={versionsCount}
+          selectedVersionIndex={selectedVersionIdx}
+          loading={loading}
+          hasHistory={messages.length >= 2}
+          onSelectVersion={setSelectedVersionIdx}
+          onRevert={handleRevertToVersion}
+          onRollback={handleRollback}
+          onRetry={handleRetry}
+        />
 
         <div className={styles.contentArea} ref={containerRef}>
           {/* Left Panel: Chat Stream */}
@@ -1420,9 +1094,12 @@ export default function Home() {
                           <p>{m.content}</p>
                           {m.image && (
                             <div className="message-image-container" style={{ marginTop: '0.6rem', maxWidth: '240px' }}>
-                              <img 
-                                src={m.image} 
+                              <Image
+                                src={m.image}
                                 alt="Reference attachment" 
+                                width={240}
+                                height={240}
+                                unoptimized
                                 style={{ width: '100%', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.06)', display: 'block', cursor: 'zoom-in' }} 
                                 onClick={() => window.open(m.image, '_blank')}
                               />
@@ -1470,7 +1147,7 @@ export default function Home() {
               {selectedImage && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem', borderBottom: '1px solid var(--border)', background: 'rgba(255,255,255,0.01)' }}>
                   <div style={{ position: 'relative', width: '48px', height: '48px', borderRadius: '4px', overflow: 'hidden', border: '1px solid var(--border)' }}>
-                    <img src={selectedImage} alt="Preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    <Image src={selectedImage} alt="Preview" width={48} height={48} unoptimized style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                     <button
                       onClick={handleRemoveImage}
                       style={{ position: 'absolute', top: 0, right: 0, background: 'rgba(0,0,0,0.6)', border: 'none', borderRadius: '50%', padding: '2px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
@@ -1916,258 +1593,18 @@ export default function Home() {
                   </div>
                 </div>
 
-                {/* Bottom Timeline component */}
-                {(() => {
-                  const totalSec = getDurationInSeconds(editorCode);
-                  const totalFrames = Math.round(totalSec * 30);
-                  const parsedCons = parseConstants(editorCode);
-                  const clips = getTimelineClips(parsedCons, totalFrames);
-                  const activeAudio = parseAudioTrack(editorCode);
-
-                  return (
-                    <div className={styles.timelinePanel}>
-                      <div className={styles.timelineToolbar}>
-                        {/* Left: Play/Pause and Time Display */}
-                        <div className={styles.timelineControls}>
-                          <button
-                            onClick={toggleStudioPlay}
-                            className={styles.btnIcon}
-                            disabled={!videoUrl || isEditorRendering}
-                            style={{ width: '28px', height: '28px' }}
-                            title={isPlaying ? "Pause" : "Play"}
-                          >
-                            {isPlaying ? <span style={{ fontSize: '10px' }}>❚❚</span> : <Play size={10} />}
-                          </button>
-                          <div className={styles.timelineTimeDisplay}>
-                            {currentFrame}f / {totalFrames}f ({totalSec}s)
-                          </div>
-                        </div>
-
-                        {/* Center: Zoom Controls */}
-                        <div className={styles.timelineZoomControls}>
-                          <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Zoom</span>
-                          <button
-                            onClick={() => setZoomScale(z => Math.max(0.5, z - 0.25))}
-                            className={styles.btnIcon}
-                            style={{ width: '18px', height: '18px', border: 'none', padding: 0 }}
-                            disabled={isEditorRendering}
-                          >
-                            -
-                          </button>
-                          <input
-                            type="range"
-                            min="0.5"
-                            max="4.0"
-                            step="0.1"
-                            value={zoomScale}
-                            onChange={e => setZoomScale(parseFloat(e.target.value))}
-                            style={{ width: '70px', height: '4px', cursor: 'pointer' }}
-                            disabled={isEditorRendering}
-                          />
-                          <button
-                            onClick={() => setZoomScale(z => Math.min(4.0, z + 0.25))}
-                            className={styles.btnIcon}
-                            style={{ width: '18px', height: '18px', border: 'none', padding: 0 }}
-                            disabled={isEditorRendering}
-                          >
-                            +
-                          </button>
-                          <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                            {zoomScale.toFixed(1)}x
-                          </span>
-                        </div>
-
-                        {/* Right: Help Hover Tooltip */}
-                        <div className={styles.timelineHelpContainer}>
-                          <HelpCircle size={14} className={styles.timelineHelpIcon} />
-                          <div className={styles.timelineHelpTooltip}>
-                            <strong>Keyboard Shortcuts</strong>
-                            <ul>
-                              <li><span>Play / Pause</span> <kbd>Space</kbd></li>
-                              <li><span>Step frame back</span> <kbd>←</kbd></li>
-                              <li><span>Step frame forward</span> <kbd>→</kbd></li>
-                              <li><span>Jump 10 frames back</span> <kbd>Shift+←</kbd></li>
-                              <li><span>Jump 10 frames forward</span> <kbd>Shift+→</kbd></li>
-                            </ul>
-                            <strong style={{ marginTop: '0.5rem' }}>Timeline Actions</strong>
-                            <ul>
-                              <li><span>Slide layer timing</span> Drag clip block</li>
-                              <li><span>Trim layer duration</span> Drag block edge</li>
-                              <li><span>Seek playback time</span> Drag ruler scrubber</li>
-                            </ul>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className={styles.timelineWorkspace}>
-                        {/* Left labels column */}
-                        <div className={styles.timelineTrackLabels}>
-                          {clips.map(clip => (
-                            <div key={clip.id} className={styles.timelineTrackLabelRow}>
-                              {clip.label}
-                            </div>
-                          ))}
-                          {activeAudio && (
-                            <div className={styles.timelineTrackLabelRow} style={{ color: '#10b981' }}>
-                              ♫ Audio Sound
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Tracks and Ruler Area */}
-                        <div 
-                          className={styles.timelineTracksArea}
-                          ref={timelineTracksRef}
-                        >
-                          <div className={styles.timelineTracksInner} style={{ width: `${zoomScale * 100}%` }}>
-                            {/* Ruler ticks & labels */}
-                            <div 
-                              className={styles.timelineRuler}
-                              onMouseDown={(e) => handleTimelineMouseDown(e, 'scrub')}
-                            >
-                              {(() => {
-                                const getTickStep = (zoom: number) => {
-                                  if (zoom <= 0.7) return 60;
-                                  if (zoom <= 1.2) return 30;
-                                  return 15;
-                                };
-                                const tickStep = getTickStep(zoomScale);
-                                return Array.from({ length: Math.ceil(totalFrames / tickStep) + 1 }).map((_, i) => {
-                                  const frameIdx = i * tickStep;
-                                  const pct = (frameIdx / totalFrames) * 100;
-                                  if (pct > 100) return null;
-                                  return (
-                                    <Fragment key={frameIdx}>
-                                      <div className={styles.timelineRulerTick} style={{ left: `${pct}%`, height: frameIdx % (tickStep * 2) === 0 ? '12px' : '6px', top: frameIdx % (tickStep * 2) === 0 ? '12px' : '18px' }} />
-                                      {frameIdx % (tickStep * 2) === 0 && (
-                                        <div className={styles.timelineRulerLabel} style={{ left: `${pct}%` }}>
-                                          {frameIdx}f
-                                        </div>
-                                      )}
-                                    </Fragment>
-                                  );
-                                });
-                              })()}
-                            </div>
-
-                            {/* Clips rows */}
-                            {clips.map((clip) => {
-                              const leftPct = (clip.startFrame / totalFrames) * 100;
-                              const widthPct = ((clip.endFrame - clip.startFrame) / totalFrames) * 100;
-                              return (
-                                <div 
-                                  key={clip.id} 
-                                  className={styles.timelineTrackRow}
-                                >
-                                  <div 
-                                    className={styles.timelineClip}
-                                    style={{ 
-                                      left: `${leftPct}%`, 
-                                      width: `${widthPct}%`,
-                                      backgroundColor: getClipColor(clip.id),
-                                      borderColor: 'rgba(255, 255, 255, 0.15)'
-                                    }}
-                                    onMouseDown={(e) => handleTimelineMouseDown(
-                                      e, 
-                                      'move', 
-                                      clip.id, 
-                                      clip.startFrame, 
-                                      clip.endFrame, 
-                                      clip.startVarName, 
-                                      clip.endVarName
-                                    )}
-                                  >
-                                    <div 
-                                      className={`${styles.timelineClipHandle} ${styles.timelineClipHandleLeft}`}
-                                      onMouseDown={(e) => handleTimelineMouseDown(
-                                        e, 
-                                        'resize-left', 
-                                        clip.id, 
-                                        clip.startFrame, 
-                                        clip.endFrame, 
-                                        clip.startVarName, 
-                                        clip.endVarName
-                                      )}
-                                    />
-                                    <span className={styles.timelineClipLabel}>{clip.label}</span>
-                                    <div 
-                                      className={`${styles.timelineClipHandle} ${styles.timelineClipHandleRight}`}
-                                      onMouseDown={(e) => handleTimelineMouseDown(
-                                        e, 
-                                        'resize-right', 
-                                        clip.id, 
-                                        clip.startFrame, 
-                                        clip.endFrame, 
-                                        clip.startVarName, 
-                                        clip.endVarName
-                                      )}
-                                    />
-                                  </div>
-                                </div>
-                              );
-                            })}
-
-                            {/* Sound/Audio track row */}
-                            {activeAudio && (
-                              <div className={styles.timelineTrackRow}>
-                                <div 
-                                  className={`${styles.timelineClip} audio`}
-                                  style={{ 
-                                    left: '0%', 
-                                    width: '100%',
-                                    cursor: 'default',
-                                    backgroundColor: '#0f766e',
-                                    borderColor: 'rgba(255, 255, 255, 0.1)',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '1rem',
-                                    padding: '0 12px'
-                                  }}
-                                >
-                                  <span className={styles.timelineClipLabel} style={{ flex: 'none', maxWidth: '30%' }}>♫ {activeAudio.src.split('/').pop() || 'Soundtrack'}</span>
-                                  <div style={{ flex: 1, height: '18px', display: 'flex', alignItems: 'center' }}>
-                                    {(() => {
-                                      const bars = [];
-                                      const count = 100;
-                                      for (let j = 0; j < count; j++) {
-                                        const h = Math.abs(Math.sin(j * 0.18) * 0.4 + Math.cos(j * 0.35) * 0.25) * 70 + 15;
-                                        bars.push(
-                                          <div
-                                            key={j}
-                                            style={{
-                                              flex: 1,
-                                              height: `${h}%`,
-                                              backgroundColor: 'rgba(255, 255, 255, 0.35)',
-                                              margin: '0 1px',
-                                              borderRadius: '1px'
-                                            }}
-                                          />
-                                        );
-                                      }
-                                      return (
-                                        <div style={{ display: 'flex', width: '100%', height: '100%', alignItems: 'center' }}>
-                                          {bars}
-                                        </div>
-                                      );
-                                    })()}
-                                  </div>
-                                </div>
-                              </div>
-                            )}
-
-                            {/* Playhead vertical line overlay */}
-                            <div 
-                              className={styles.timelinePlayhead}
-                              style={{ left: `${(currentFrame / totalFrames) * 100}%` }}
-                            >
-                              <div className={styles.timelinePlayheadHandle} />
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })()}
+                <StudioTimeline
+                  editorCode={editorCode}
+                  currentFrame={currentFrame}
+                  isPlaying={isPlaying}
+                  zoomScale={zoomScale}
+                  timelineTracksRef={timelineTracksRef}
+                  videoUrl={videoUrl}
+                  isEditorRendering={isEditorRendering}
+                  onTogglePlay={toggleStudioPlay}
+                  onZoomChange={setZoomScale}
+                  onMouseDown={handleTimelineMouseDown}
+                />
               </div>
             )}
           </div>
@@ -2175,39 +1612,17 @@ export default function Home() {
       </main>
 
       {showApiKeyModal && (
-        <div className={styles.modalBackdrop}>
-          <div className={styles.modalContentCard}>
-            <h3>Gemini API Key</h3>
-            <p>Enter your Google Gemini API Key to enable video generation.</p>
-            
-            <div className={styles.apiKeyInputContainer}>
-              <input
-                type={showPassword ? "text" : "password"}
-                placeholder="AIzaSy..."
-                value={tempApiKey}
-                onChange={e => setTempApiKey(e.target.value)}
-                className={`${styles.controlSelect} text-input`}
-              />
-              <button 
-                type="button" 
-                className={styles.eyeToggleBtn}
-                onClick={() => setShowPassword(!showPassword)}
-                title={showPassword ? "Hide API Key" : "Show API Key"}
-              >
-                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-              </button>
-            </div>
-            
-            <div className={styles.modalActions}>
-              <button className={`${styles.btn} ${styles.btnOutline}`} onClick={() => setShowApiKeyModal(false)}>
-                Cancel
-              </button>
-              <button className={styles.btn} onClick={() => { handleSaveApiKey(tempApiKey); setShowApiKeyModal(false); }}>
-                Save Key
-              </button>
-            </div>
-          </div>
-        </div>
+        <ApiKeyModal
+          apiKey={tempApiKey}
+          showPassword={showPassword}
+          onApiKeyChange={setTempApiKey}
+          onTogglePassword={() => setShowPassword((visible) => !visible)}
+          onCancel={() => setShowApiKeyModal(false)}
+          onSave={() => {
+            handleSaveApiKey(tempApiKey);
+            setShowApiKeyModal(false);
+          }}
+        />
       )}
     </div>
   );

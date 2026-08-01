@@ -8,7 +8,6 @@
  */
 
 const path = require('path');
-const fs = require('fs');
 const net = require('net');
 const { bundle } = require('@remotion/bundler');
 const { renderMedia, selectComposition, ensureBrowser } = require('@remotion/renderer');
