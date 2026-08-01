@@ -58,12 +58,9 @@ export default function Home() {
   const renameInputRef = useRef<HTMLInputElement>(null);
   // We cannot read the HttpOnly gemini_api_key cookie from JS.
   // Instead the server sets a non-HttpOnly `has_api_key=1` signal we can read.
-  const [hasApiKey, setHasApiKey] = useState(() => {
-    if (typeof document !== 'undefined') {
-      return document.cookie.includes('has_api_key=1');
-    }
-    return false;
-  });
+  // Keep the server and first client render identical, then read the client-only
+  // cookie after hydration.
+  const [hasApiKey, setHasApiKey] = useState(false);
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
   const [tempApiKey, setTempApiKey] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -138,6 +135,10 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [selectedImageName, setSelectedImageName] = useState<string | null>(null);
+
+  useEffect(() => {
+    setHasApiKey(document.cookie.split('; ').some((cookie) => cookie === 'has_api_key=1'));
+  }, []);
 
 
   const fetchModels = async () => {
