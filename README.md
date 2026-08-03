@@ -18,17 +18,17 @@ Generated with this app:
   </tr>
   <tr>
     <td>
-      <video src="docs/assets/examples/notifications.mp4" controls muted playsinline width="100%"></video>
+      <img src="docs/assets/examples/notifications.gif" width="100%">
       <br />
       <a href="docs/assets/examples/notifications.mp4">Open MP4</a>
     </td>
     <td>
-      <video src="docs/assets/examples/samsung-logo.mp4" controls muted playsinline width="100%"></video>
+      <img src="docs/assets/examples/samsung-logo.gif" width="100%">
       <br />
       <a href="docs/assets/examples/samsung-logo.mp4">Open MP4</a>
     </td>
     <td>
-      <video src="docs/assets/examples/apple-logo.mp4" controls muted playsinline width="100%"></video>
+      <img src="docs/assets/examples/apple-logo.gif" width="100%">
       <br />
       <a href="docs/assets/examples/apple-logo.mp4">Open MP4</a>
     </td>
