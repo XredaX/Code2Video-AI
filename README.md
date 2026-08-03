@@ -151,24 +151,6 @@ Do not expose it through a public tunnel, reverse proxy, or shared network witho
 
 The Docker renderer is designed to reduce risk from generated code, but it is still a defense boundary for a local development tool, not a full multi-tenant sandbox.
 
-## Troubleshooting
-
-### Gemini quota or rate limit errors
-
-If Gemini returns a quota or rate-limit error, wait for the quota window to reset, switch to a model with available quota, or use another key. The app retries transient Gemini failures, but it cannot bypass account limits.
-
-### Docker render cannot access a remote asset
-
-Docker rendering disables network access. Download the asset, upload it into the project, or bundle it locally instead of referencing a remote URL.
-
-### Renderer image is stale
-
-Rebuild the image after renderer changes:
-
-```bash
-npm run renderer:image
-```
-
 ## Contributing
 
 Issues and pull requests are welcome. For larger changes, include:
