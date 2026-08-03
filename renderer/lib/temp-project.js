@@ -106,7 +106,7 @@ function cleanupTempProject(tempDir) {
   if (tempDir && fs.existsSync(tempDir)) {
     try {
       fs.rmSync(tempDir, { recursive: true, force: true });
-    } catch (e) {
+    } catch {
       // Ignore cleanup errors on Windows (file locks)
     }
   }

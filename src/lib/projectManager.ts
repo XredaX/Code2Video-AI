@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
+import { writeFileAtomic, writeJsonAtomic } from '@/lib/atomic-file';
 
 export interface Message {
   role: 'user' | 'model';
@@ -14,7 +15,7 @@ export interface ProjectMetadata {
   updatedAt: number;
 }
 
-const ROOT_PROJECTS_DIR = path.join(process.cwd(), 'projects');
+const ROOT_PROJECTS_DIR = path.join(/* turbopackIgnore: true */ process.cwd(), 'projects');
 
 // ---------------------------------------------------------------------------
 // Per-session paths
@@ -36,7 +37,7 @@ function projectsJson(sessionId: string): string {
 function initStorage(sessionId: string): void {
   const jsonPath = projectsJson(sessionId);
   if (!fs.existsSync(jsonPath)) {
-    fs.writeFileSync(jsonPath, JSON.stringify([]));
+    writeJsonAtomic(jsonPath, []);
   }
 }
 
@@ -60,47 +61,51 @@ export const createProject = (sessionId: string, name: string): ProjectMetadata 
   };
 
   projects.push(newProject);
-  fs.writeFileSync(projectsJson(sessionId), JSON.stringify(projects, null, 2));
+  writeJsonAtomic(projectsJson(sessionId), projects);
 
   const projectDir = path.join(sessionDir(sessionId), newProject.id);
   fs.mkdirSync(projectDir, { recursive: true });
-  fs.writeFileSync(path.join(projectDir, 'history.json'), JSON.stringify([]));
+  writeJsonAtomic(path.join(projectDir, 'history.json'), []);
 
   return newProject;
 };
 
 export const getProjectHistory = (sessionId: string, projectId: string): Message[] => {
-  const historyPath = path.join(sessionDir(sessionId), projectId, 'history.json');
+  const historyPath = path.join(getProjectDir(sessionId, projectId), 'history.json');
   if (!fs.existsSync(historyPath)) return [];
   return JSON.parse(fs.readFileSync(historyPath, 'utf-8'));
 };
 
 export const saveProjectHistory = (sessionId: string, projectId: string, history: Message[]): void => {
-  const historyPath = path.join(sessionDir(sessionId), projectId, 'history.json');
-  fs.writeFileSync(historyPath, JSON.stringify(history, null, 2));
+  const historyPath = path.join(getProjectDir(sessionId, projectId), 'history.json');
+  writeJsonAtomic(historyPath, history);
 
   // Update timestamp in metadata
   const projects = listProjects(sessionId);
   const proj = projects.find(p => p.id === projectId);
   if (proj) {
     proj.updatedAt = Date.now();
-    fs.writeFileSync(projectsJson(sessionId), JSON.stringify(projects, null, 2));
+    writeJsonAtomic(projectsJson(sessionId), projects);
   }
 };
 
 export const getProjectCode = (sessionId: string, projectId: string): string => {
-  const codePath = path.join(sessionDir(sessionId), projectId, 'video.tsx');
+  const codePath = path.join(getProjectDir(sessionId, projectId), 'video.tsx');
   if (!fs.existsSync(codePath)) return '';
   return fs.readFileSync(codePath, 'utf-8');
 };
 
 export const saveProjectCode = (sessionId: string, projectId: string, code: string): void => {
-  const codePath = path.join(sessionDir(sessionId), projectId, 'video.tsx');
-  fs.writeFileSync(codePath, code);
+  const codePath = path.join(getProjectDir(sessionId, projectId), 'video.tsx');
+  writeFileAtomic(codePath, code);
 };
 
 export const getProjectDir = (sessionId: string, projectId: string): string => {
-  return path.join(sessionDir(sessionId), projectId);
+  const dir = path.join(sessionDir(sessionId), projectId);
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+    throw Object.assign(new Error('Project not found'), { status: 404 });
+  }
+  return dir;
 };
 
 export const renameProject = (sessionId: string, projectId: string, newName: string): ProjectMetadata | null => {
@@ -109,7 +114,7 @@ export const renameProject = (sessionId: string, projectId: string, newName: str
   if (!proj) return null;
   proj.name = newName.slice(0, 200); // enforce max length
   proj.updatedAt = Date.now();
-  fs.writeFileSync(projectsJson(sessionId), JSON.stringify(projects, null, 2));
+  writeJsonAtomic(projectsJson(sessionId), projects);
   return proj;
 };
 
@@ -118,7 +123,7 @@ export const deleteProject = (sessionId: string, projectId: string): boolean => 
   const idx = projects.findIndex(p => p.id === projectId);
   if (idx === -1) return false;
   projects.splice(idx, 1);
-  fs.writeFileSync(projectsJson(sessionId), JSON.stringify(projects, null, 2));
+  writeJsonAtomic(projectsJson(sessionId), projects);
 
   const projectDir = path.join(sessionDir(sessionId), projectId);
   if (fs.existsSync(projectDir)) {

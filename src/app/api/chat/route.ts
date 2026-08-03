@@ -1,16 +1,21 @@
 import { NextResponse } from 'next/server';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { getProjectHistory, saveProjectHistory, saveProjectCode, getProjectDir, getProjectCode } from '@/lib/projectManager';
-import { assertUUID } from '@/lib/validate';
+import { getProjectHistory, saveProjectHistory, saveProjectCode, getProjectDir } from '@/lib/projectManager';
+import { assertGeminiModelId, assertUUID, validateImageUpload } from '@/lib/validate';
 import fs from 'fs';
 import path from 'path';
 import { cookies } from 'next/headers';
 import { withRetry } from '@/lib/gemini-retry';
 import { withProjectLock, projectLockKey } from '@/lib/project-lock';
-import { execTracked, renderKey } from '@/lib/render-tracker';
+import { renderKey } from '@/lib/render-tracker';
+import { renderProject } from '@/lib/render-runner';
+import { copyFileAtomic, writeFileAtomic } from '@/lib/atomic-file';
+import { randomUUID } from 'crypto';
 
 // Max image size: 10 MB (base64 adds ~33% overhead, so 10MB binary ≈ 13.4MB base64)
-const MAX_IMAGE_BASE64_LEN = 14 * 1024 * 1024;
+const MAX_MESSAGE_LENGTH = 20_000;
+const ALLOWED_ASPECT_RATIOS = new Set(['16:9', '9:16', '4:3', '3:4', '1:1']);
+const ALLOWED_RESOLUTIONS = new Set(['720p', '1080p']);
 
 let thesvgCache = '';
 
@@ -29,24 +34,20 @@ export async function POST(req: Request) {
 
     const genAI = new GoogleGenerativeAI(apiKey);
 
-    const { projectId, message, image, options } = await req.json();
+    const { projectId, message: rawMessage, image, options } = await req.json();
 
     // --- UUID validation (Blocker 1) ---
     assertUUID(projectId, 'projectId');
 
-    if (!message) {
+    if (typeof rawMessage !== 'string' || !rawMessage.trim()) {
       return NextResponse.json({ error: 'Missing message' }, { status: 400 });
     }
-
-    // --- Image size limit (Blocker 5) ---
-    if (image?.data) {
-      if (typeof image.data !== 'string' || image.data.length > MAX_IMAGE_BASE64_LEN) {
-        return NextResponse.json({ error: 'Image too large. Maximum size is 10 MB.' }, { status: 413 });
-      }
+    const message = rawMessage.trim();
+    if (message.length > MAX_MESSAGE_LENGTH) {
+      return NextResponse.json({ error: 'Message is too long.' }, { status: 413 });
     }
 
-    // Load history snapshot for building the chat context (read-only at this point)
-    const historySnapshot = getProjectHistory(sid, projectId);
+    const validatedImage = validateImageUpload(image);
 
     // Read and combine all local agent SKILL.md instructions dynamically
     let systemInstruction = 'You are an expert Remotion video developer. Generate a production-ready TSX file based on the user description.';
@@ -95,11 +96,23 @@ export async function POST(req: Request) {
       console.error('Failed to load dynamic skills:', err);
     }
 
-    const selectedModel = options?.model;
-    if (!selectedModel) {
-      return NextResponse.json({ error: 'Model selection is required. Please select a model in the UI.' }, { status: 400 });
+    const selectedModel = assertGeminiModelId(options?.model);
+    if (!ALLOWED_ASPECT_RATIOS.has(options?.aspectRatio) || !ALLOWED_RESOLUTIONS.has(options?.resolution)) {
+      return NextResponse.json({ error: 'Invalid render options.' }, { status: 400 });
+    }
+    if (options?.duration !== 'auto') {
+      const requestedDuration = Number(options?.duration);
+      if (!Number.isFinite(requestedDuration) || requestedDuration < 1 || requestedDuration > 15) {
+        return NextResponse.json({ error: 'Duration must be between 1 and 15 seconds.' }, { status: 400 });
+      }
     }
     const model = genAI.getGenerativeModel({ model: selectedModel, systemInstruction });
+
+    const projectDir = getProjectDir(sid, projectId);
+    const lockKey = projectLockKey(sid, projectId);
+
+    return await withProjectLock(lockKey, async () => {
+    const historySnapshot = getProjectHistory(sid, projectId);
 
     const chatHistory = historySnapshot.map((msg: any) => {
       const parts: any[] = [];
@@ -146,23 +159,20 @@ export async function POST(req: Request) {
       promptMessage = `${message}\n\n[System Requirement]: For this video generation, you MUST use these exact compositionConfig settings in your code:\n- width: ${width}\n- height: ${height}\n- durationInSeconds: ${durationInstruction} (and set durationInSeconds as a literal number in compositionConfig, e.g. durationInSeconds: ${duration === 'auto' ? '[AI chosen number]' : duration})\nEnsure all layout mathematics, position coordinates, font sizes, and elements scale cleanly to fit this target resolution (${width}x${height}).`;
     }
 
-    // Save reference image if supplied
+    // Stage the attachment path. Commit the file only after this turn succeeds.
     let attachmentUrl = '';
-    if (image?.data && image?.mimeType) {
+    let attachmentPath = '';
+    if (validatedImage) {
       const turnIndex = historySnapshot.filter((m: any) => m.role === 'user').length;
-      const attachmentsDir = path.join(process.cwd(), 'projects', sid, projectId, 'attachments');
-      if (!fs.existsSync(attachmentsDir)) fs.mkdirSync(attachmentsDir, { recursive: true });
-      const ext = image.mimeType.split('/')[1] === 'jpeg' ? 'jpg' : image.mimeType.split('/')[1];
-      const filename = `turn_${turnIndex}.${ext}`;
-      const filePath = path.join(attachmentsDir, filename);
-      fs.writeFileSync(filePath, Buffer.from(image.data, 'base64'));
+      const filename = `turn_${turnIndex}.${validatedImage.extension}`;
+      attachmentPath = path.join(projectDir, 'attachments', filename);
       attachmentUrl = `/api/projects/${projectId}/attachments/${filename}`;
     }
 
     // Prepare prompt parts
     const promptParts: any[] = [];
-    if (image?.data && image?.mimeType) {
-      promptParts.push({ inlineData: { mimeType: image.mimeType, data: image.data } });
+    if (validatedImage) {
+      promptParts.push({ inlineData: { mimeType: validatedImage.mimeType, data: validatedImage.data } });
     }
     promptParts.push({ text: promptMessage });
 
@@ -181,21 +191,15 @@ export async function POST(req: Request) {
       code = responseText.replace(/^```(tsx)?\n?/i, '').replace(/```$/i, '').trim();
     }
 
-    const lockKey = projectLockKey(sid, projectId);
-
     if (code) {
       // Render can be long — do it outside the lock so it doesn't block other ops
-      const projectDir = getProjectDir(sid, projectId);
-      const inputPath = path.join(projectDir, 'video.tsx');
-
       // Snapshot version count from the read-only snapshot for naming
       const prevVersionsCount = historySnapshot.filter((m: any) => m.role === 'model').length;
       const newVersion = prevVersionsCount + 1;
       const versionedOutputPath = path.join(projectDir, `output_v${newVersion}.mp4`);
-
-      const portableNode = path.join(process.cwd(), 'node', 'node.exe');
-      const nodeExe = fs.existsSync(portableNode) ? portableNode : 'node';
-      const renderCliPath = path.join(process.cwd(), 'renderer', 'render-cli.js');
+      const renderId = randomUUID();
+      const stagedInputPath = path.join(projectDir, `.render-${renderId}.tsx`);
+      const stagedOutputPath = path.join(projectDir, `.render-${renderId}.mp4`);
 
       let fallbackWidth = 1080, fallbackHeight = 1920, fallbackDuration = 5;
       if (options) {
@@ -209,68 +213,67 @@ export async function POST(req: Request) {
       }
 
       // Save code optimistically so render can read it
-      const oldCode = getProjectCode(sid, projectId);
-      saveProjectCode(sid, projectId, code);
-
       const rk = renderKey(sid, projectId);
 
       try {
-        await execTracked(rk, nodeExe, [
-          renderCliPath,
-          `--input=${inputPath}`,
-          `--output=${versionedOutputPath}`,
-          `--width=${fallbackWidth}`,
-          `--height=${fallbackHeight}`,
-          `--durationInSeconds=${fallbackDuration}`,
-        ], { timeout: 180_000 });
+        writeFileAtomic(stagedInputPath, code);
+        await renderProject({
+          key: rk,
+          inputPath: stagedInputPath,
+          outputPath: stagedOutputPath,
+          width: fallbackWidth,
+          height: fallbackHeight,
+          durationInSeconds: fallbackDuration,
+        });
 
-        fs.copyFileSync(versionedOutputPath, path.join(projectDir, 'output.mp4'));
+        saveProjectCode(sid, projectId, code);
+        copyFileAtomic(stagedOutputPath, versionedOutputPath);
+        copyFileAtomic(stagedOutputPath, path.join(projectDir, 'output.mp4'));
+        if (validatedImage && attachmentPath) {
+          fs.mkdirSync(path.dirname(attachmentPath), { recursive: true });
+          writeFileAtomic(attachmentPath, validatedImage.buffer);
+        }
         videoUrl = `/api/video/${projectId}`;
 
-        // --- Locked write: re-read fresh history and append atomically ---
-        await withProjectLock(lockKey, () => {
-          const freshHistory = getProjectHistory(sid, projectId);
-          const userMsg: any = { role: 'user', content: message };
-          if (attachmentUrl) userMsg.image = attachmentUrl;
-          freshHistory.push(userMsg);
-          freshHistory.push({ role: 'model', content: responseText });
-          saveProjectHistory(sid, projectId, freshHistory);
-          return Promise.resolve();
-        });
+        const userMsg: any = { role: 'user', content: message };
+        if (attachmentUrl) userMsg.image = attachmentUrl;
+        historySnapshot.push(userMsg);
+        historySnapshot.push({ role: 'model', content: responseText });
+        saveProjectHistory(sid, projectId, historySnapshot);
       } catch (renderError: any) {
         // Detect if the render was cancelled by the user
         const wasCancelled = renderError.killed || renderError.signal === 'SIGTERM' || renderError.signal === 'SIGKILL';
 
         if (wasCancelled) {
           console.log('Render cancelled by user for project:', projectId);
-          if (oldCode) saveProjectCode(sid, projectId, oldCode);
           return NextResponse.json({ error: 'Render cancelled by user.' }, { status: 499 });
         }
 
         console.error('Render failed:', renderError);
-        if (oldCode) saveProjectCode(sid, projectId, oldCode);
-        else { try { fs.unlinkSync(inputPath); } catch (_) {} }
-
         return NextResponse.json({
           error: 'Code generated but rendering failed',
           details: renderError.stderr || renderError.stdout || renderError.message,
           code,
         }, { status: 500 });
+      } finally {
+        try { fs.unlinkSync(stagedInputPath); } catch {}
+        try { fs.unlinkSync(stagedOutputPath); } catch {}
       }
     } else {
       // No code — just append the conversation turn, still locked
-      await withProjectLock(lockKey, () => {
-        const freshHistory = getProjectHistory(sid, projectId);
-        const userMsg: any = { role: 'user', content: message };
-        if (attachmentUrl) userMsg.image = attachmentUrl;
-        freshHistory.push(userMsg);
-        freshHistory.push({ role: 'model', content: responseText });
-        saveProjectHistory(sid, projectId, freshHistory);
-        return Promise.resolve();
-      });
+      if (validatedImage && attachmentPath) {
+        fs.mkdirSync(path.dirname(attachmentPath), { recursive: true });
+        writeFileAtomic(attachmentPath, validatedImage.buffer);
+      }
+      const userMsg: any = { role: 'user', content: message };
+      if (attachmentUrl) userMsg.image = attachmentUrl;
+      historySnapshot.push(userMsg);
+      historySnapshot.push({ role: 'model', content: responseText });
+      saveProjectHistory(sid, projectId, historySnapshot);
     }
 
     return NextResponse.json({ message: responseText, code, videoUrl });
+    });
   } catch (error: any) {
     console.error('API Chat Error:', error);
     return NextResponse.json({ error: error.message || 'Internal Server Error' }, { status: error.status ?? 500 });

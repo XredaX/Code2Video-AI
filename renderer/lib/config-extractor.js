@@ -78,7 +78,26 @@ function extractCompositionConfig(filePath) {
   const height = extractNumber(configStrFull, 'height') ?? DEFAULTS.height;
   const defaultProps = extractObject(configStrFull, 'defaultProps') || {};
 
+  validateCompositionConfig({ id, durationInSeconds, fps, width, height });
   return { id, durationInSeconds, fps, width, height, defaultProps };
+}
+
+function validateCompositionConfig({ id, durationInSeconds, fps, width, height }) {
+  if (!/^[A-Za-z0-9_-]{1,100}$/.test(id)) {
+    throw new Error('compositionConfig.id must use only letters, numbers, dashes, and underscores');
+  }
+  if (!Number.isFinite(durationInSeconds) || durationInSeconds < 1 || durationInSeconds > 15) {
+    throw new Error('compositionConfig.durationInSeconds must be between 1 and 15');
+  }
+  if (!Number.isInteger(fps) || fps < 1 || fps > 60) {
+    throw new Error('compositionConfig.fps must be an integer between 1 and 60');
+  }
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 64 || height < 64 || width > 3840 || height > 3840) {
+    throw new Error('compositionConfig dimensions must be integers between 64 and 3840');
+  }
+  if (width * height > 8_294_400) {
+    throw new Error('compositionConfig cannot exceed 4K pixel count');
+  }
 }
 
 /**

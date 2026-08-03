@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
-import { getProjectHistory, getProjectCode, renameProject, deleteProject } from '@/lib/projectManager';
+import { getProjectHistory, getProjectCode, getProjectDir, renameProject, deleteProject } from '@/lib/projectManager';
 import { assertUUID } from '@/lib/validate';
 import fs from 'fs';
 import path from 'path';
+import { metadataLockKey, projectLockKey, withProjectLock } from '@/lib/project-lock';
 
 async function getSessionId(): Promise<string> {
   const cookieStore = await cookies();
@@ -41,7 +42,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ projec
     if (!name || typeof name !== 'string' || !name.trim()) {
       return NextResponse.json({ error: 'Name is required' }, { status: 400 });
     }
-    const updated = renameProject(sid, projectId, name.trim());
+    const updated = await withProjectLock(metadataLockKey(sid), async () =>
+      renameProject(sid, projectId, name.trim()),
+    );
     if (!updated) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
     return NextResponse.json(updated);
   } catch (err: any) {
@@ -54,8 +57,11 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ proj
     const sid = await getSessionId();
     const { projectId } = await params;
     assertUUID(projectId, 'projectId');
+    getProjectDir(sid, projectId);
 
-    const ok = deleteProject(sid, projectId);
+    const ok = await withProjectLock(projectLockKey(sid, projectId), async () =>
+      withProjectLock(metadataLockKey(sid), async () => deleteProject(sid, projectId)),
+    );
     if (!ok) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
     return NextResponse.json({ success: true });
   } catch (err: any) {

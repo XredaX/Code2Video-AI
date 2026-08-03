@@ -4,7 +4,12 @@ import { assertUUID, assertPositiveInt } from '@/lib/validate';
 import fs from 'fs';
 import path from 'path';
 import { Readable } from 'stream';
-import { execTracked, renderKey } from '@/lib/render-tracker';
+import { renderKey } from '@/lib/render-tracker';
+import { renderProject } from '@/lib/render-runner';
+import { randomUUID } from 'crypto';
+import { copyFileAtomic, writeFileAtomic } from '@/lib/atomic-file';
+import { withProjectLock, projectLockKey } from '@/lib/project-lock';
+import { getProjectDir, getProjectHistory } from '@/lib/projectManager';
 
 export async function GET(req: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
@@ -16,48 +21,45 @@ export async function GET(req: Request, { params }: { params: Promise<{ projectI
     const url = new URL(req.url);
     const versionParam = url.searchParams.get('v');
 
-    let videoPath = path.join(process.cwd(), 'projects', sid, projectId, 'output.mp4');
+    const projectDir = getProjectDir(sid, projectId);
+    let videoPath = path.join(projectDir, 'output.mp4');
 
     if (versionParam !== null) {
       const version = assertPositiveInt(versionParam, 'version');
-      const versionedPath = path.join(process.cwd(), 'projects', sid, projectId, `output_v${version}.mp4`);
+      const versionedPath = path.join(projectDir, `output_v${version}.mp4`);
 
       if (!fs.existsSync(versionedPath)) {
-        const historyPath = path.join(process.cwd(), 'projects', sid, projectId, 'history.json');
-        if (fs.existsSync(historyPath)) {
+        await withProjectLock(projectLockKey(sid, projectId), async () => {
+          if (fs.existsSync(versionedPath)) return;
+          const history = getProjectHistory(sid, projectId);
           try {
-            const history = JSON.parse(fs.readFileSync(historyPath, 'utf-8'));
             const modelMessages = history.filter((m: any) => m.role === 'model');
-            const versionIdx = version - 1;
-            const msg = modelMessages[versionIdx];
+            const msg = modelMessages[version - 1];
             if (msg) {
               const tsxMatch = msg.content.match(/```tsx\s*([\s\S]*?)\s*```/);
               if (tsxMatch?.[1]) {
-                const codeToCompile = tsxMatch[1];
-                const tempInputPath = path.join(process.cwd(), 'projects', sid, projectId, `video_v${version}.tsx`);
-                fs.writeFileSync(tempInputPath, codeToCompile);
-
-                const portableNode = path.join(process.cwd(), 'node', 'node.exe');
-                const nodeExe = fs.existsSync(portableNode) ? portableNode : 'node';
-                const renderCliPath = path.join(process.cwd(), 'renderer', 'render-cli.js');
+                const renderId = randomUUID();
+                const stagedInputPath = path.join(projectDir, `.render-${renderId}.tsx`);
+                const stagedOutputPath = path.join(projectDir, `.render-${renderId}.mp4`);
+                writeFileAtomic(stagedInputPath, tsxMatch[1]);
 
                 try {
-                  const rk = renderKey(sid, projectId);
-                  await execTracked(rk, nodeExe, [
-                    renderCliPath,
-                    `--input=${tempInputPath}`,
-                    `--output=${versionedPath}`,
-                  ], { timeout: 180_000 });
+                  await renderProject({
+                    key: renderKey(sid, projectId),
+                    inputPath: stagedInputPath,
+                    outputPath: stagedOutputPath,
+                  });
+                  copyFileAtomic(stagedOutputPath, versionedPath);
                 } finally {
-                  // Always clean up temp file
-                  try { fs.unlinkSync(tempInputPath); } catch (_) {}
+                  try { fs.unlinkSync(stagedInputPath); } catch {}
+                  try { fs.unlinkSync(stagedOutputPath); } catch {}
                 }
               }
             }
           } catch (compileError) {
             console.error(`On-demand compile failed for version ${version}:`, compileError);
           }
-        }
+        });
       }
 
       if (fs.existsSync(versionedPath)) {
@@ -74,9 +76,34 @@ export async function GET(req: Request, { params }: { params: Promise<{ projectI
     const range = req.headers.get('range');
 
     if (range) {
-      const parts = range.replace(/bytes=/, '').split('-');
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const match = range.match(/^bytes=(\d*)-(\d*)$/);
+      let start = 0;
+      let end = fileSize - 1;
+      if (!match || (!match[1] && !match[2]) || fileSize === 0) {
+        return new NextResponse(null, {
+          status: 416,
+          headers: { 'Content-Range': `bytes */${fileSize}` },
+        });
+      }
+      if (!match[1]) {
+        const suffixLength = Number(match[2]);
+        if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) {
+          return new NextResponse(null, {
+            status: 416,
+            headers: { 'Content-Range': `bytes */${fileSize}` },
+          });
+        }
+        start = Math.max(fileSize - suffixLength, 0);
+      } else {
+        start = Number(match[1]);
+        if (match[2]) end = Number(match[2]);
+      }
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start > end || end >= fileSize) {
+        return new NextResponse(null, {
+          status: 416,
+          headers: { 'Content-Range': `bytes */${fileSize}` },
+        });
+      }
       const chunksize = end - start + 1;
       const file = fs.createReadStream(videoPath, { start, end });
       return new NextResponse(Readable.toWeb(file) as any, {

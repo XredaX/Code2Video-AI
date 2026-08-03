@@ -18,24 +18,28 @@ const securityHeaders = [
     value: "strict-origin-when-cross-origin",
   },
   {
-    // Allow Monaco Editor CDN workers + Google Fonts + same-origin everything else.
+    key: "Permissions-Policy",
+    value: "camera=(), microphone=(), geolocation=(), payment=()",
+  },
+  {
+    key: "Cross-Origin-Opener-Policy",
+    value: "same-origin",
+  },
+  {
     key: "Content-Security-Policy",
     value: [
       "default-src 'self'",
-      // Scripts: same-origin + Monaco CDN (loaded via @monaco-editor/react)
-      "script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com blob:",
-      // Styles: same-origin + inline (Monaco injects style tags) + Google Fonts
-      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-      // Fonts: same-origin + Google Fonts CDN
-      "font-src 'self' https://fonts.gstatic.com data:",
-      // Images: same-origin + data URIs (base64 previews)
+      `script-src 'self' 'unsafe-inline'${process.env.NODE_ENV === "development" ? " 'unsafe-eval'" : ""}`,
+      "style-src 'self' 'unsafe-inline'",
+      "font-src 'self' data:",
       "img-src 'self' data: blob:",
-      // Workers: blob: (Monaco spawns web workers via blob URLs)
-      "worker-src blob:",
-      // Connect: same-origin API calls + Google AI API
-      "connect-src 'self' https://generativelanguage.googleapis.com",
-      // Media (video previews)
+      "worker-src 'self' blob:",
+      "connect-src 'self'",
       "media-src 'self' blob:",
+      "object-src 'none'",
+      "base-uri 'self'",
+      "form-action 'self'",
+      "frame-ancestors 'self'",
     ].join("; "),
   },
 ];

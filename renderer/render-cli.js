@@ -8,7 +8,6 @@
  */
 
 const path = require('path');
-const fs = require('fs');
 const net = require('net');
 const { bundle } = require('@remotion/bundler');
 const { renderMedia, selectComposition, ensureBrowser } = require('@remotion/renderer');
@@ -221,6 +220,9 @@ async function main() {
       codec: 'h264',
       outputLocation: outputPath,
       port: renderPort,
+      chromiumOptions: {
+        enableMultiProcessOnLinux: true,
+      },
       onProgress: ({ progress: p }) => {
         progress(`Rendering: ${Math.round(p * 100)}%`);
       },

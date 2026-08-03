@@ -22,6 +22,9 @@ node_modules/
 # production
 /build
 
+# Local user projects and rendered media
+/projects/
+
 # misc
 .DS_Store
 *.pem

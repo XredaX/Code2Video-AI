@@ -14,6 +14,10 @@ export async function POST(req: Request) {
     const { key } = await req.json();
     const cleanKey = typeof key === 'string' ? key.trim() : '';
 
+    if (cleanKey.length > 512) {
+      return NextResponse.json({ error: 'API key is too long' }, { status: 400 });
+    }
+
     const response = NextResponse.json({ ok: true });
 
     if (cleanKey) {

@@ -13,12 +13,19 @@ const eslintConfig = defineConfig([
       "@typescript-eslint/no-unused-vars": "warn",
     }
   },
+  {
+    files: ["renderer/**/*.js"],
+    rules: {
+      "@typescript-eslint/no-require-imports": "off",
+    },
+  },
   // Override default ignores of eslint-config-next.
   globalIgnores([
     // Default ignores of eslint-config-next:
     ".next/**",
     "out/**",
     "build/**",
+    "projects/**",
     "next-env.d.ts",
   ]),
 ]);

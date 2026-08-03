@@ -1,10 +1,16 @@
-import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
-import { getProjectHistory, saveProjectHistory, saveProjectCode, getProjectDir } from '@/lib/projectManager';
-import { assertUUID } from '@/lib/validate';
+import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { execTracked, renderKey } from '@/lib/render-tracker';
+import { cookies } from 'next/headers';
+import { NextResponse } from 'next/server';
+import { copyFileAtomic, writeFileAtomic } from '@/lib/atomic-file';
+import { withProjectLock, projectLockKey } from '@/lib/project-lock';
+import { getProjectHistory, saveProjectHistory, saveProjectCode, getProjectDir } from '@/lib/projectManager';
+import { renderProject } from '@/lib/render-runner';
+import { renderKey } from '@/lib/render-tracker';
+import { assertUUID } from '@/lib/validate';
+
+const MAX_CODE_LENGTH = 500_000;
 
 export async function POST(req: Request, { params }: { params: Promise<{ projectId: string }> }) {
   try {
@@ -14,53 +20,64 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
     assertUUID(projectId, 'projectId');
 
     const { code } = await req.json();
-    if (!code || typeof code !== 'string') {
+    if (typeof code !== 'string' || !code.trim()) {
       return NextResponse.json({ error: 'No code provided' }, { status: 400 });
     }
-
-    saveProjectCode(sid, projectId, code);
+    if (code.length > MAX_CODE_LENGTH) {
+      return NextResponse.json({ error: 'Code is too large.' }, { status: 413 });
+    }
 
     const projectDir = getProjectDir(sid, projectId);
-    const inputPath = path.join(projectDir, 'video.tsx');
-    const history = getProjectHistory(sid, projectId);
-    const prevVersionsCount = history.filter((m: any) => m.role === 'model').length;
-    const newVersion = prevVersionsCount + 1;
-    const versionedOutputPath = path.join(projectDir, `output_v${newVersion}.mp4`);
+    const lockKey = projectLockKey(sid, projectId);
 
-    const portableNode = path.join(process.cwd(), 'node', 'node.exe');
-    const nodeExe = fs.existsSync(portableNode) ? portableNode : 'node';
-    const renderCliPath = path.join(process.cwd(), 'renderer', 'render-cli.js');
+    return await withProjectLock(lockKey, async () => {
+      const history = getProjectHistory(sid, projectId);
+      const newVersion = history.filter((message: any) => message.role === 'model').length + 1;
+      const renderId = randomUUID();
+      const stagedInputPath = path.join(projectDir, `.render-${renderId}.tsx`);
+      const stagedOutputPath = path.join(projectDir, `.render-${renderId}.mp4`);
+      const versionedOutputPath = path.join(projectDir, `output_v${newVersion}.mp4`);
 
-    try {
-      const rk = renderKey(sid, projectId);
-      await execTracked(rk, nodeExe, [
-        renderCliPath,
-        `--input=${inputPath}`,
-        `--output=${versionedOutputPath}`,
-      ], { timeout: 180_000 });
+      try {
+        writeFileAtomic(stagedInputPath, code);
+        await renderProject({
+          key: renderKey(sid, projectId),
+          inputPath: stagedInputPath,
+          outputPath: stagedOutputPath,
+        });
 
-      fs.copyFileSync(versionedOutputPath, path.join(projectDir, 'output.mp4'));
-      const videoUrl = `/api/video/${projectId}`;
+        copyFileAtomic(stagedOutputPath, versionedOutputPath);
+        copyFileAtomic(stagedOutputPath, path.join(projectDir, 'output.mp4'));
+        saveProjectCode(sid, projectId, code);
 
-      const userMsg = { role: 'user' as const, content: 'Manually edited video code in studio editor.' };
-      const modelMsg = { role: 'model' as const, content: `Manual edit saved and rendered successfully.\n\n\`\`\`tsx\n${code}\n\`\`\`` };
-      history.push(userMsg);
-      history.push(modelMsg);
-      saveProjectHistory(sid, projectId, history);
+        history.push(
+          { role: 'user', content: 'Manually edited video code in studio editor.' },
+          { role: 'model', content: `Manual edit saved and rendered successfully.\n\n\`\`\`tsx\n${code}\n\`\`\`` },
+        );
+        saveProjectHistory(sid, projectId, history);
 
-      return NextResponse.json({ success: true, code, videoUrl, history });
-    } catch (renderError: any) {
-      const wasCancelled = renderError.killed || renderError.signal === 'SIGTERM' || renderError.signal === 'SIGKILL';
-      if (wasCancelled) {
-        return NextResponse.json({ error: 'Render cancelled by user.' }, { status: 499 });
+        return NextResponse.json({
+          success: true,
+          code,
+          videoUrl: `/api/video/${projectId}`,
+          history,
+        });
+      } catch (renderError: any) {
+        const wasCancelled = renderError.killed || renderError.signal === 'SIGTERM' || renderError.signal === 'SIGKILL';
+        if (wasCancelled) {
+          return NextResponse.json({ error: 'Render cancelled by user.' }, { status: 499 });
+        }
+        console.error('Manual edit render failed:', renderError);
+        return NextResponse.json({
+          error: 'Compilation or rendering failed',
+          details: renderError.stderr || renderError.stdout || renderError.message,
+          code,
+        }, { status: 500 });
+      } finally {
+        try { fs.unlinkSync(stagedInputPath); } catch {}
+        try { fs.unlinkSync(stagedOutputPath); } catch {}
       }
-      console.error('Manual edit render failed:', renderError);
-      return NextResponse.json({
-        error: 'Compilation or rendering failed',
-        details: renderError.stderr || renderError.stdout || renderError.message,
-        code,
-      }, { status: 500 });
-    }
+    });
   } catch (error: any) {
     console.error('API Project Editor Error:', error);
     return NextResponse.json({ error: error.message || 'Internal Server Error' }, { status: error.status ?? 500 });
