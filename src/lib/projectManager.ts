@@ -6,6 +6,8 @@ import { writeFileAtomic, writeJsonAtomic } from '@/lib/atomic-file';
 export interface Message {
   role: 'user' | 'model';
   content: string;
+  image?: string;
+  code?: string;
 }
 
 export interface ProjectMetadata {

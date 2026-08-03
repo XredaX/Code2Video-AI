@@ -33,15 +33,16 @@ export async function GET(req: Request, { params }: { params: Promise<{ projectI
           if (fs.existsSync(versionedPath)) return;
           const history = getProjectHistory(sid, projectId);
           try {
-            const modelMessages = history.filter((m: any) => m.role === 'model');
+            const modelMessages = history.filter((message) => message.role === 'model' && (message.code || /```tsx\s*[\s\S]*?```/.test(message.content)));
             const msg = modelMessages[version - 1];
             if (msg) {
               const tsxMatch = msg.content.match(/```tsx\s*([\s\S]*?)\s*```/);
-              if (tsxMatch?.[1]) {
+              const versionCode = msg.code || tsxMatch?.[1]?.trim();
+              if (versionCode) {
                 const renderId = randomUUID();
                 const stagedInputPath = path.join(projectDir, `.render-${renderId}.tsx`);
                 const stagedOutputPath = path.join(projectDir, `.render-${renderId}.mp4`);
-                writeFileAtomic(stagedInputPath, tsxMatch[1]);
+                writeFileAtomic(stagedInputPath, versionCode);
 
                 try {
                   await renderProject({

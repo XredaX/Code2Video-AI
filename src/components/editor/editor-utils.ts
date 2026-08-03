@@ -8,6 +8,14 @@ export interface Message {
   role: 'user' | 'model';
   content: string;
   image?: string;
+  code?: string;
+}
+
+export function getMessageCode(message: Message | undefined): string {
+  if (!message) return '';
+  if (message.code) return message.code;
+  const match = message.content.match(/```tsx\s*([\s\S]*?)\s*```/);
+  return match?.[1]?.trim() ?? '';
 }
 
 export interface ConstantVar {

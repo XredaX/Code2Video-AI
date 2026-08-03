@@ -2,7 +2,7 @@ import path from 'path';
 import { randomUUID } from 'crypto';
 import { execTracked } from '@/lib/render-tracker';
 
-const DEFAULT_IMAGE = 'ai-video-editor-renderer:4.0.503';
+const DEFAULT_IMAGE = 'code2video-ai-renderer:4.0.503';
 const RENDER_TIMEOUT_MS = 180_000;
 
 export interface RenderRequest {
@@ -22,8 +22,9 @@ function assertProjectLocalPath(filePath: string, projectDir: string, extension:
   }
 }
 
-function optionalArgs(request: RenderRequest): string[] {
+function optionalArgs(request: RenderRequest, still = false): string[] {
   const args: string[] = [];
+  if (still) args.push('--still=true');
   if (request.width !== undefined) args.push(`--width=${request.width}`);
   if (request.height !== undefined) args.push(`--height=${request.height}`);
   if (request.durationInSeconds !== undefined) args.push(`--durationInSeconds=${request.durationInSeconds}`);
@@ -37,7 +38,7 @@ function rendererMode(): 'docker' | 'local' {
   throw new Error('RENDERER_MODE must be "docker". Local rendering is allowed only in development.');
 }
 
-async function renderInDocker(request: RenderRequest, projectDir: string): Promise<void> {
+async function renderInDocker(request: RenderRequest, projectDir: string, still = false): Promise<void> {
   const image = process.env.REMOTION_RENDERER_IMAGE || DEFAULT_IMAGE;
   const containerName = `aive-render-${randomUUID().replaceAll('-', '').slice(0, 20)}`;
   const inputName = path.basename(request.inputPath);
@@ -60,7 +61,7 @@ async function renderInDocker(request: RenderRequest, projectDir: string): Promi
     image,
     `--input=/input/${inputName}`,
     `--output=/output/${outputName}`,
-    ...optionalArgs(request),
+    ...optionalArgs(request, still),
   ];
 
   await execTracked(request.key, 'docker', args, {
@@ -71,25 +72,33 @@ async function renderInDocker(request: RenderRequest, projectDir: string): Promi
   });
 }
 
-async function renderLocally(request: RenderRequest): Promise<void> {
+async function renderLocally(request: RenderRequest, still = false): Promise<void> {
   const renderCliPath = path.join(process.cwd(), 'renderer', 'render-cli.js');
   await execTracked(request.key, process.execPath, [
     renderCliPath,
     `--input=${request.inputPath}`,
     `--output=${request.outputPath}`,
-    ...optionalArgs(request),
+    ...optionalArgs(request, still),
   ], { timeout: RENDER_TIMEOUT_MS });
 }
 
-export async function renderProject(request: RenderRequest): Promise<void> {
+async function render(request: RenderRequest, extension: '.mp4' | '.png', still: boolean): Promise<void> {
   const projectDir = path.resolve(path.dirname(request.inputPath));
   assertProjectLocalPath(request.inputPath, projectDir, '.tsx');
-  assertProjectLocalPath(request.outputPath, projectDir, '.mp4');
+  assertProjectLocalPath(request.outputPath, projectDir, extension);
 
   if (rendererMode() === 'local') {
-    await renderLocally(request);
+    await renderLocally(request, still);
     return;
   }
 
-  await renderInDocker(request, projectDir);
+  await renderInDocker(request, projectDir, still);
+}
+
+export async function renderProject(request: RenderRequest): Promise<void> {
+  await render(request, '.mp4', false);
+}
+
+export async function renderProjectStill(request: RenderRequest): Promise<void> {
+  await render(request, '.png', true);
 }

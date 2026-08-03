@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 import { cookies } from 'next/headers';
 import { withRetry } from '@/lib/gemini-retry';
 import { assertGeminiModelId } from '@/lib/validate';
@@ -22,7 +22,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Prompt is too long' }, { status: 413 });
     }
 
-    const genAI = new GoogleGenerativeAI(apiKey);
+    const genAI = new GoogleGenAI({ apiKey });
     
     const systemInstruction = `You are an expert prompt engineer for an AI Remotion Video generator.
 The user will provide a short, simple idea. Your task is to enhance it into a highly descriptive, visually-rich, and detailed prompt.
@@ -33,13 +33,12 @@ Do NOT include any filler text, conversational text, or prefixes like "Here is y
 
     const modelId = assertGeminiModelId(selectedModel);
 
-    const model = genAI.getGenerativeModel({
+    const result = await withRetry(() => genAI.models.generateContent({
       model: modelId,
-      systemInstruction,
-    });
-
-    const result = await withRetry(() => model.generateContent(prompt.trim()));
-    const enhancedPrompt = result.response.text();
+      contents: prompt.trim(),
+      config: { systemInstruction },
+    }));
+    const enhancedPrompt = result.text;
 
     return NextResponse.json({ enhancedPrompt });
   } catch (error: any) {

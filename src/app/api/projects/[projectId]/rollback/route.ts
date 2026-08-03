@@ -9,6 +9,7 @@ import { getProjectHistory, saveProjectHistory, saveProjectCode, getProjectDir }
 import { renderProject } from '@/lib/render-runner';
 import { renderKey } from '@/lib/render-tracker';
 import { assertUUID } from '@/lib/validate';
+import { clearPendingApproval } from '@/lib/mcp-store';
 
 function cleanupFutureAssets(projectDir: string, userCount: number, assistantCount: number): void {
   const attachmentsDir = path.join(/* turbopackIgnore: true */ projectDir, 'attachments');
@@ -55,10 +56,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
 
       const newHistory = history.slice(0, targetIndex);
       const userCount = newHistory.filter((message: any) => message.role === 'user').length;
-      const assistantCount = newHistory.filter((message: any) => message.role === 'model').length;
+      const renderedCount = newHistory.filter((message) => message.role === 'model' && (message.code || /```tsx\s*[\s\S]*?```/.test(message.content))).length;
       let lastCodeBlock = '';
       for (let index = newHistory.length - 1; index >= 0; index--) {
         if (newHistory[index].role !== 'model') continue;
+        if (newHistory[index].code) {
+          lastCodeBlock = newHistory[index].code!;
+          break;
+        }
         const match = newHistory[index].content.match(/```tsx\s*([\s\S]*?)\s*```/);
         if (match?.[1]) {
           lastCodeBlock = match[1].trim();
@@ -69,17 +74,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
       const outputPath = path.join(/* turbopackIgnore: true */ projectDir, 'output.mp4');
       if (!lastCodeBlock) {
         saveProjectHistory(sid, projectId, newHistory);
+        clearPendingApproval(sid, projectId);
         for (const file of ['video.tsx', 'output.mp4']) {
           try { fs.unlinkSync(path.join(/* turbopackIgnore: true */ projectDir, file)); } catch {}
         }
-        cleanupFutureAssets(projectDir, userCount, assistantCount);
+        cleanupFutureAssets(projectDir, userCount, renderedCount);
         return NextResponse.json({ success: true, history: newHistory, code: '', videoUrl: null });
       }
 
       const renderId = randomUUID();
       const stagedInputPath = path.join(/* turbopackIgnore: true */ projectDir, `.render-${renderId}.tsx`);
       const stagedOutputPath = path.join(/* turbopackIgnore: true */ projectDir, `.render-${renderId}.mp4`);
-      const versionedOutputPath = path.join(/* turbopackIgnore: true */ projectDir, `output_v${assistantCount}.mp4`);
+      const versionedOutputPath = path.join(/* turbopackIgnore: true */ projectDir, `output_v${renderedCount}.mp4`);
 
       try {
         writeFileAtomic(stagedInputPath, lastCodeBlock);
@@ -93,7 +99,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
         copyFileAtomic(stagedOutputPath, outputPath);
         saveProjectCode(sid, projectId, lastCodeBlock);
         saveProjectHistory(sid, projectId, newHistory);
-        cleanupFutureAssets(projectDir, userCount, assistantCount);
+        clearPendingApproval(sid, projectId);
+        cleanupFutureAssets(projectDir, userCount, renderedCount);
 
         return NextResponse.json({
           success: true,

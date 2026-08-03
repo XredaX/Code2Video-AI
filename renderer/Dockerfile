@@ -23,11 +23,11 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-COPY render-cli.js ./render-cli.js
-COPY lib ./lib
-
 RUN npx remotion browser ensure \
     && chown -R node:node /app
+
+COPY --chown=node:node render-cli.js ./render-cli.js
+COPY --chown=node:node lib ./lib
 
 USER node
 ENTRYPOINT ["node", "render-cli.js"]

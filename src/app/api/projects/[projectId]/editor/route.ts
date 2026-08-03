@@ -32,7 +32,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
 
     return await withProjectLock(lockKey, async () => {
       const history = getProjectHistory(sid, projectId);
-      const newVersion = history.filter((message: any) => message.role === 'model').length + 1;
+      const newVersion = history.filter((message) => message.role === 'model' && (message.code || /```tsx\s*[\s\S]*?```/.test(message.content))).length + 1;
       const renderId = randomUUID();
       const stagedInputPath = path.join(projectDir, `.render-${renderId}.tsx`);
       const stagedOutputPath = path.join(projectDir, `.render-${renderId}.mp4`);
@@ -52,7 +52,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ project
 
         history.push(
           { role: 'user', content: 'Manually edited video code in studio editor.' },
-          { role: 'model', content: `Manual edit saved and rendered successfully.\n\n\`\`\`tsx\n${code}\n\`\`\`` },
+          { role: 'model', content: 'Manual edit saved and rendered successfully.', code },
         );
         saveProjectHistory(sid, projectId, history);
 

@@ -1,5 +1,5 @@
 import type { RefObject } from 'react';
-import { ChevronLeft, ChevronRight, Key, Plus, Trash2, Video } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Key, PlugZap, Plus, Trash2, Video } from 'lucide-react';
 import styles from '../../app/page.module.css';
 import type { Project } from './editor-utils';
 
@@ -11,6 +11,7 @@ interface ProjectSidebarProps {
   renameValue: string;
   renameInputRef: RefObject<HTMLInputElement | null>;
   hasApiKey: boolean;
+  mcpConnectionCount: number;
   onCreate: () => void;
   onSelect: (projectId: string) => void;
   onBeginRename: (project: Project) => void;
@@ -19,6 +20,7 @@ interface ProjectSidebarProps {
   onCancelRename: () => void;
   onDelete: (projectId: string) => void;
   onOpenSettings: () => void;
+  onOpenConnections: () => void;
   onToggle: () => void;
 }
 
@@ -30,6 +32,7 @@ export function ProjectSidebar({
   renameValue,
   renameInputRef,
   hasApiKey,
+  mcpConnectionCount,
   onCreate,
   onSelect,
   onBeginRename,
@@ -38,6 +41,7 @@ export function ProjectSidebar({
   onCancelRename,
   onDelete,
   onOpenSettings,
+  onOpenConnections,
   onToggle,
 }: ProjectSidebarProps) {
   return (
@@ -102,7 +106,16 @@ export function ProjectSidebar({
           </div>
         </div>
 
-        <div className="sidebar-footer" style={{ padding: '1rem', borderTop: '1px solid var(--border)' }}>
+        <div className="sidebar-footer" style={{ padding: '1rem', borderTop: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          <button
+            className={`${styles.btn} ${styles.btnOutline}`}
+            onClick={onOpenConnections}
+            style={{ width: '100%', fontSize: '0.8rem', gap: '0.4rem', padding: '0.4rem' }}
+            title="Configure MCP tool servers"
+          >
+            <PlugZap size={14} />
+            <span>MCP Tools{mcpConnectionCount > 0 ? ` (${mcpConnectionCount})` : ''}</span>
+          </button>
           <button
             className={`${styles.btn} ${styles.btnOutline}`}
             onClick={onOpenSettings}

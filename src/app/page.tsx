@@ -1,10 +1,11 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import Image from 'next/image';
 import { Play, MessageSquare, Loader2, Code2, Sparkles, Copy, Check, Undo, RotateCcw, Pencil, Image as ImageIcon, X, Sliders, Square } from 'lucide-react';
 import styles from './page.module.css';
 import { ApiKeyModal } from '@/components/editor/ApiKeyModal';
+import { McpConnectionsModal } from '@/components/editor/McpConnectionsModal';
 import { ProjectSidebar } from '@/components/editor/ProjectSidebar';
 import { StudioTimeline } from '@/components/editor/StudioTimeline';
 import { WorkspaceHeader } from '@/components/editor/WorkspaceHeader';
@@ -13,6 +14,7 @@ import {
   clamp,
   formatLabel,
   getDurationInSeconds,
+  getMessageCode,
   parseAudioTrack,
   parseConstants,
   removeAudioFromCode,
@@ -24,6 +26,14 @@ import {
 
 
 export default function Home() {
+  type PendingApproval = {
+    id: string;
+    connectionId: string;
+    toolName: string;
+    arguments: Record<string, unknown>;
+    reason: string;
+    expiresAt: number;
+  };
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -64,6 +74,9 @@ export default function Home() {
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
   const [tempApiKey, setTempApiKey] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [showMcpModal, setShowMcpModal] = useState(false);
+  const [mcpConnectionCount, setMcpConnectionCount] = useState(0);
+  const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
   const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null);
   const [editingMessageText, setEditingMessageText] = useState('');
   const [copiedMsgIndex, setCopiedMsgIndex] = useState<number | null>(null);
@@ -138,6 +151,10 @@ export default function Home() {
 
   useEffect(() => {
     setHasApiKey(document.cookie.split('; ').some((cookie) => cookie === 'has_api_key=1'));
+    fetch('/api/mcp-connections')
+      .then(response => response.json())
+      .then(data => setMcpConnectionCount((data.connections || []).filter((connection: { enabled: boolean }) => connection.enabled).length))
+      .catch(() => undefined);
   }, []);
 
 
@@ -237,6 +254,7 @@ export default function Home() {
         setMessages([]);
         setCode('');
         setVideoUrl(null);
+        setPendingApproval(null);
       }
     } catch {
       console.error('Failed to delete project');
@@ -250,6 +268,7 @@ export default function Home() {
       const data = await res.json();
       setMessages(data.history || []);
       setCode(data.code || '');
+      setPendingApproval(data.pendingApproval || null);
       // Append a timestamp to bypass browser caching of the video
       if (data.videoUrl) {
         setVideoUrl(`${data.videoUrl}?t=${Date.now()}`);
@@ -444,6 +463,7 @@ export default function Home() {
         setMessages(prev => [...prev, { role: 'model', content: `Error: ${cleanErrorMessage(data.error)}` }]);
       } else {
         await loadProjectData(activeProjectId);
+        setPendingApproval(data.approval || null);
         if (data.code) setCode(data.code);
         if (data.videoUrl) {
           setVideoUrl(`${data.videoUrl}?t=${Date.now()}`);
@@ -457,6 +477,42 @@ export default function Home() {
       }
     } finally {
       abortControllerRef.current = null;
+      setLoading(false);
+    }
+  };
+
+  const handleMcpApproval = async (decision: 'approve' | 'deny') => {
+    if (!activeProjectId || !pendingApproval || loading) return;
+    setLoading(true);
+    const approval = pendingApproval;
+    try {
+      const opts = {
+        model: selectedModel,
+        aspectRatio,
+        duration: duration === 'other' ? (customDuration || '5') : duration,
+        resolution,
+      };
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: activeProjectId, approval: { id: approval.id, decision }, options: opts }),
+      });
+      const data = await response.json();
+      setPendingApproval(null);
+      if (!response.ok || data.error) {
+        await loadProjectData(activeProjectId);
+        setMessages(prev => [...prev, { role: 'model', content: `Error: ${cleanErrorMessage(data.error || 'MCP action failed')}` }]);
+        return;
+      }
+      await loadProjectData(activeProjectId);
+      setPendingApproval(data.approval || null);
+      if (data.code) setCode(data.code);
+      if (data.videoUrl) setVideoUrl(`${data.videoUrl}?t=${Date.now()}`);
+    } catch {
+      setPendingApproval(null);
+      await loadProjectData(activeProjectId);
+      setMessages(prev => [...prev, { role: 'model', content: 'Error: MCP approval request failed.' }]);
+    } finally {
       setLoading(false);
     }
   };
@@ -486,6 +542,7 @@ export default function Home() {
       const data = await res.json();
       if (data.success) {
         setMessages(data.history || []);
+        setPendingApproval(null);
         setCode(data.code || '');
         if (data.videoUrl) {
           setVideoUrl(`${data.videoUrl}?t=${Date.now()}`);
@@ -530,6 +587,7 @@ export default function Home() {
         if (data.success) {
           // Update local state with the rolled back history/code/video
           setMessages(data.history || []);
+          setPendingApproval(null);
           setCode(data.code || '');
           if (data.videoUrl) {
             setVideoUrl(`${data.videoUrl}?t=${Date.now()}`);
@@ -734,6 +792,7 @@ export default function Home() {
       
       if (data.success) {
         setMessages(data.history || []);
+        setPendingApproval(null);
         setCode(data.code || '');
         if (data.videoUrl) {
           setVideoUrl(`${data.videoUrl}?t=${Date.now()}`);
@@ -755,7 +814,9 @@ export default function Home() {
   const handleRevertToVersion = async (versionIdx: number) => {
     if (!activeProjectId || loading) return;
     
-    const targetIdx = 2 * (versionIdx + 1);
+    const targetMessage = modelMessages[versionIdx];
+    const targetIdx = messages.indexOf(targetMessage) + 1;
+    if (!targetMessage || targetIdx <= 0) return;
     const confirmRevert = confirm(`Are you sure you want to revert to Version ${versionIdx + 1}? This will permanently delete all subsequent versions.`);
     if (!confirmRevert) return;
     
@@ -770,9 +831,10 @@ export default function Home() {
       
       if (data.success) {
         setMessages(data.history || []);
+        setPendingApproval(null);
         setCode(data.code || '');
         if (data.videoUrl) {
-          setVideoUrl(`${data.videoUrl}?t=${Date.now()}`);
+          setVideoUrl(`${data.videoUrl}?v=${versionIdx + 1}`);
         } else {
           setVideoUrl(null);
         }
@@ -796,15 +858,14 @@ export default function Home() {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const modelMessages = useMemo(() => messages.filter((message) => message.role === 'model'), [messages]);
+  const modelMessages = messages.filter((message) => message.role === 'model' && Boolean(getMessageCode(message)));
   const versionsCount = modelMessages.length;
 
   const getCodeForVersion = useCallback((versionIdx: number): string => {
-    const msg = modelMessages[versionIdx];
+    const msg = messages.filter((message) => message.role === 'model' && Boolean(getMessageCode(message)))[versionIdx];
     if (!msg) return '';
-    const tsxMatch = msg.content.match(/```tsx\s*([\s\S]*?)\s*```/);
-    return tsxMatch && tsxMatch[1] ? tsxMatch[1] : '';
-  }, [modelMessages]);
+    return getMessageCode(msg);
+  }, [messages]);
 
   let displayedMessages = messages;
   if (selectedVersionIdx !== null && selectedVersionIdx < versionsCount - 1) {
@@ -815,7 +876,7 @@ export default function Home() {
     }
   }
 
-  const controlsDisabled = !activeProjectId || loading || (selectedVersionIdx !== null && selectedVersionIdx < versionsCount - 1);
+  const controlsDisabled = !activeProjectId || loading || Boolean(pendingApproval) || (selectedVersionIdx !== null && selectedVersionIdx < versionsCount - 1);
 
   useEffect(() => {
     setTimeout(() => {
@@ -934,6 +995,7 @@ export default function Home() {
         renameValue={renameValue}
         renameInputRef={renameInputRef}
         hasApiKey={hasApiKey}
+        mcpConnectionCount={mcpConnectionCount}
         onCreate={createProject}
         onSelect={setActiveProjectId}
         onBeginRename={(project) => {
@@ -950,6 +1012,7 @@ export default function Home() {
           setShowPassword(false);
           setShowApiKeyModal(true);
         }}
+        onOpenConnections={() => setShowMcpModal(true)}
         onToggle={() => setSidebarCollapsed((collapsed) => !collapsed)}
       />
 
@@ -1046,6 +1109,17 @@ export default function Home() {
                             </details>
                           )}
                           {finalContent && <p style={{ whiteSpace: 'pre-wrap' }}>{finalContent}</p>}
+                          {pendingApproval && i === displayedMessages.length - 1 && (
+                            <div className={styles.mcpApprovalCard}>
+                              <strong>External tool approval required</strong>
+                              <span>{pendingApproval.reason}</span>
+                              <code>{pendingApproval.toolName}({JSON.stringify(pendingApproval.arguments)})</code>
+                              <div className={styles.mcpApprovalActions}>
+                                <button className={styles.btn} disabled={loading} onClick={() => handleMcpApproval('approve')}>Approve once</button>
+                                <button className={`${styles.btn} ${styles.btnOutline}`} disabled={loading} onClick={() => handleMcpApproval('deny')}>Deny</button>
+                              </div>
+                            </div>
+                          )}
                           
                           {suggestions.length > 0 && i === displayedMessages.length - 1 && (
                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.5rem' }}>
@@ -1623,6 +1697,12 @@ export default function Home() {
             handleSaveApiKey(tempApiKey);
             setShowApiKeyModal(false);
           }}
+        />
+      )}
+      {showMcpModal && (
+        <McpConnectionsModal
+          onClose={() => setShowMcpModal(false)}
+          onCountChange={setMcpConnectionCount}
         />
       )}
     </div>

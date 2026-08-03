@@ -1,3 +1,3 @@
-# AI Video Editor — block all crawlers (this is a private tool, not a public website)
+# Code2Video-AI — block all crawlers (this is a private tool, not a public website)
 User-agent: *
 Disallow: /

@@ -5,6 +5,7 @@ import { assertUUID } from '@/lib/validate';
 import fs from 'fs';
 import path from 'path';
 import { metadataLockKey, projectLockKey, withProjectLock } from '@/lib/project-lock';
+import { readPendingApproval } from '@/lib/mcp-store';
 
 async function getSessionId(): Promise<string> {
   const cookieStore = await cookies();
@@ -26,6 +27,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ project
       history,
       code,
       videoUrl: hasVideo ? `/api/video/${projectId}` : null,
+      pendingApproval: readPendingApproval(sid, projectId),
     });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: err.status ?? 500 });

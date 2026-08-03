@@ -1,5 +1,5 @@
 {
-  "name": "ai-video-editor",
+  "name": "code2video-ai",
   "version": "1.0.0",
   "private": true,
   "scripts": {
@@ -7,11 +7,12 @@
     "build": "next build",
     "start": "next start --hostname 127.0.0.1",
     "lint": "eslint",
-    "renderer:image": "docker build -t ai-video-editor-renderer:4.0.503 renderer",
+    "renderer:image": "docker build -t code2video-ai-renderer:4.0.503 renderer",
     "postinstall": "cd renderer && npm install"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.24.1",
+    "@google/genai": "^2.15.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "lucide-react": "^1.17.0",
     "next": "16.2.12",
     "react": "19.2.8",
