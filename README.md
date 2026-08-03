@@ -169,17 +169,6 @@ Rebuild the image after renderer changes:
 npm run renderer:image
 ```
 
-### Next.js dev server acts corrupted after a crash
-
-Stop the dev server, remove the local `.next/` cache, then restart:
-
-```powershell
-Remove-Item -Recurse -Force .next
-npm run dev
-```
-
-Only remove `.next/` from this project directory.
-
 ## Contributing
 
 Issues and pull requests are welcome. For larger changes, include:
@@ -189,7 +178,3 @@ Issues and pull requests are welcome. For larger changes, include:
 - verification steps,
 - a short demo note or video when the UI changes,
 - and any security impact if the change touches rendering, secrets, uploads, or API routes.
-
-## License
-
-No license file is included yet. Add a `LICENSE` file before accepting external contributions or allowing reuse beyond normal GitHub viewing and forking.
