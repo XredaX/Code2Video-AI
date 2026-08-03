@@ -1,5 +1,11 @@
 # Code2Video-AI
 
+<div align="center">
+  
+  ![Visitors](https://api.visitorbadge.io/api/visitors?path=https%3A%2F%2Fgithub.com%2FXredaX%2FCode2Video-AI&label=VISITORS&countColor=%23263759)
+  
+</div>
+
 A local-first AI motion studio for generating, editing, and rendering Remotion videos from text prompts.
 
 The app uses Google Gemini to generate Remotion TSX, lets you review and revise the generated code, then renders MP4 output through a locked-down renderer. It is built for programmatic motion graphics: product intros, explainers, UI animations, logo reveals, social clips, and other code-driven video work.
