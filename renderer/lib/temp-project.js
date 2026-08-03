@@ -7,6 +7,42 @@ const path = require('path');
 const os = require('os');
 const { detectExportStyle } = require('./config-extractor');
 
+const MAX_PUBLIC_ASSET_BYTES = 50 * 1024 * 1024;
+const ALLOWED_PUBLIC_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg',
+  '.mp3', '.wav', '.m4a', '.aac', '.ogg', '.json',
+]);
+
+function copyPublicAssets(projectDir, tempDir) {
+  const publicDir = path.join(tempDir, 'public');
+  fs.mkdirSync(publicDir, { recursive: true });
+  let copiedBytes = 0;
+
+  const copyDirectory = (sourceDir, relativeDir) => {
+    if (!fs.existsSync(sourceDir)) return;
+    for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+      const source = path.join(sourceDir, entry.name);
+      const relative = path.join(relativeDir, entry.name);
+      const destination = path.join(publicDir, relative);
+      const stats = fs.lstatSync(source);
+      if (stats.isSymbolicLink()) continue;
+      if (stats.isDirectory()) {
+        copyDirectory(source, relative);
+        continue;
+      }
+      if (!stats.isFile() || !ALLOWED_PUBLIC_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue;
+      copiedBytes += stats.size;
+      if (copiedBytes > MAX_PUBLIC_ASSET_BYTES) throw new Error('Project render assets exceed 50 MB.');
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      fs.copyFileSync(source, destination);
+    }
+  };
+
+  for (const directory of ['assets', 'attachments']) {
+    copyDirectory(path.join(projectDir, directory), directory);
+  }
+}
+
 /**
  * Create a temporary Remotion project that imports the user's TSX file
  * @param {string} tsxFilePath - Absolute path to user's TSX file
@@ -20,6 +56,8 @@ function createTempProject(tsxFilePath, config) {
 
   const srcDir = path.join(tempDir, 'src');
   fs.mkdirSync(srcDir, { recursive: true });
+
+  copyPublicAssets(path.dirname(tsxFilePath), tempDir);
 
   // Detect export style of user's TSX
   const exportStyle = detectExportStyle(tsxFilePath);

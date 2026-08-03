@@ -9,8 +9,10 @@
 
 const path = require('path');
 const net = require('net');
+const fs = require('fs');
+const sharp = require('sharp');
 const { bundle } = require('@remotion/bundler');
-const { renderMedia, selectComposition, ensureBrowser } = require('@remotion/renderer');
+const { renderMedia, renderStill, selectComposition, ensureBrowser } = require('@remotion/renderer');
 
 const { extractCompositionConfig } = require('./lib/config-extractor');
 const { createTempProject, cleanupTempProject } = require('./lib/temp-project');
@@ -54,17 +56,72 @@ function findAvailablePort() {
 }
 
 // Generate unique output filename
-function generateOutputPath(inputPath) {
+function generateOutputPath(inputPath, extension = '.mp4') {
   const dir = path.dirname(inputPath);
   const baseName = path.basename(inputPath, '.tsx');
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  return path.join(dir, `${baseName}_${timestamp}.mp4`);
+  return path.join(dir, `${baseName}_${timestamp}${extension}`);
+}
+
+function parseOverride(value, label, { integer = false, min, max }) {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || (integer && !Number.isInteger(parsed)) || parsed < min || parsed > max) {
+    throw new Error(`${label} must be ${integer ? 'an integer' : 'a number'} between ${min} and ${max}`);
+  }
+  return parsed;
+}
+
+async function renderPreviewSheet({ composition, serveUrl, outputPath, durationInFrames, port }) {
+  const sampleFrames = [0.12, 0.5, 0.88].map(position => (
+    Math.max(0, Math.min(durationInFrames - 1, Math.round((durationInFrames - 1) * position)))
+  ));
+  const temporaryFrames = sampleFrames.map((_, index) => `${outputPath}.frame-${index}.png`);
+  try {
+    for (let index = 0; index < sampleFrames.length; index++) {
+      await renderStill({
+        composition,
+        serveUrl,
+        output: temporaryFrames[index],
+        imageFormat: 'png',
+        frame: sampleFrames[index],
+        port,
+        overwrite: true,
+        chromiumOptions: { enableMultiProcessOnLinux: true },
+      });
+    }
+
+    const scale = Math.min(1, 480 / composition.width, 720 / composition.height);
+    const panelWidth = Math.max(1, Math.round(composition.width * scale));
+    const panelHeight = Math.max(1, Math.round(composition.height * scale));
+    const gap = 12;
+    const panels = await Promise.all(temporaryFrames.map(framePath => (
+      sharp(framePath).resize(panelWidth, panelHeight, { fit: 'fill' }).png().toBuffer()
+    )));
+    await sharp({
+      create: {
+        width: panelWidth * panels.length + gap * (panels.length - 1),
+        height: panelHeight,
+        channels: 4,
+        background: { r: 30, g: 30, b: 34, alpha: 1 },
+      },
+    }).composite(panels.map((input, index) => ({
+      input,
+      left: index * (panelWidth + gap),
+      top: 0,
+    }))).png().toFile(outputPath);
+  } finally {
+    for (const framePath of temporaryFrames) {
+      try { fs.unlinkSync(framePath); } catch {}
+    }
+  }
 }
 
 async function main() {
   banner('Remotion Video Renderer');
 
   const args = parseArgs();
+  const renderAsStill = args.still === true || args.still === 'true';
   const inputPath = args.input || (args._positional && args._positional[0]);
 
   if (!inputPath) {
@@ -89,7 +146,7 @@ async function main() {
   // Determine output path
   const outputPath = args.output
     ? path.resolve(args.output)
-    : generateOutputPath(absoluteInputPath);
+    : generateOutputPath(absoluteInputPath, renderAsStill ? '.png' : '.mp4');
 
   log('Input', absoluteInputPath);
   log('Output', outputPath);
@@ -100,6 +157,18 @@ async function main() {
   let config;
   try {
     config = extractCompositionConfig(absoluteInputPath);
+    const widthOverride = parseOverride(args.width, 'width', { integer: true, min: 64, max: 3840 });
+    const heightOverride = parseOverride(args.height, 'height', { integer: true, min: 64, max: 3840 });
+    const durationOverride = parseOverride(args.durationInSeconds, 'durationInSeconds', { min: 1, max: 15 });
+    config = {
+      ...config,
+      width: widthOverride ?? config.width,
+      height: heightOverride ?? config.height,
+      durationInSeconds: durationOverride ?? config.durationInSeconds,
+    };
+    if (config.width * config.height > 8_294_400) {
+      throw new Error('Requested dimensions cannot exceed 4K pixel count');
+    }
     log('Composition ID', config.id);
     log('Duration', `${config.durationInSeconds}s at ${config.fps}fps`);
     log('Resolution', `${config.width}x${config.height}`);
@@ -153,6 +222,7 @@ async function main() {
 
     const bundleLocation = await bundle({
       entryPoint,
+      publicDir: path.join(tempProjectDir, 'public'),
       webpackOverride: (webpackConfig) => {
         // Add renderer's node_modules to module resolution paths
         // This allows TSX files to use dependencies installed in the renderer
@@ -198,39 +268,50 @@ async function main() {
     });
     success(`Selected: ${composition.id}`);
 
-    // Render the video
+    // Render the representative still or full video.
     const durationInFrames = Math.round(config.durationInSeconds * config.fps);
     console.log('');
-    log('Rendering video...');
+    log(renderAsStill ? 'Rendering three-frame preview...' : 'Rendering video...');
     console.log(`    ${durationInFrames} frames at ${config.fps}fps`);
 
-    // Find a fresh port for renderMedia (selectComposition's server may not have
-    // fully released its port yet)
+    // Find a fresh port because selectComposition's server may not have fully
+    // released its port yet.
     const renderPort = await findAvailablePort();
 
-    await renderMedia({
-      composition: {
-        ...composition,
+    const resolvedComposition = {
+      ...composition,
+      durationInFrames,
+      fps: config.fps,
+      width: config.width,
+      height: config.height,
+    };
+    if (renderAsStill) {
+      await renderPreviewSheet({
+        composition: resolvedComposition,
+        serveUrl: bundleLocation,
+        outputPath,
         durationInFrames,
-        fps: config.fps,
-        width: config.width,
-        height: config.height,
-      },
-      serveUrl: bundleLocation,
-      codec: 'h264',
-      outputLocation: outputPath,
-      port: renderPort,
-      chromiumOptions: {
-        enableMultiProcessOnLinux: true,
-      },
-      onProgress: ({ progress: p }) => {
-        progress(`Rendering: ${Math.round(p * 100)}%`);
-      },
-    });
+        port: renderPort,
+      });
+    } else {
+      await renderMedia({
+        composition: resolvedComposition,
+        serveUrl: bundleLocation,
+        codec: 'h264',
+        outputLocation: outputPath,
+        port: renderPort,
+        chromiumOptions: {
+          enableMultiProcessOnLinux: true,
+        },
+        onProgress: ({ progress: p }) => {
+          progress(`Rendering: ${Math.round(p * 100)}%`);
+        },
+      });
+    }
 
     clearProgress();
     console.log('');
-    success('Render complete!');
+    success(renderAsStill ? 'Preview complete!' : 'Render complete!');
     console.log('');
     console.log(`  Output: ${outputPath}`);
     console.log('');

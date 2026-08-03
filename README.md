@@ -1,4 +1,4 @@
-# AI Video Editor
+# Code2Video-AI
 
 A local-first AI motion studio for generating, editing, and rendering Remotion videos from text prompts.
 
@@ -37,7 +37,7 @@ Generated with this app:
 
 ## User Interface Overview
 
-![AI Video Editor Interface](docs/assets/AI-Video-Editor-Remotion-Gemini.png)
+![Code2Video-AI Interface](docs/assets/Code2Video-AI-Remotion-Gemini.png)
 
 The application provides a comprehensive workspace for AI-driven video generation:
 
@@ -84,7 +84,7 @@ npm run dev
 
 Open [http://127.0.0.1:3000](http://127.0.0.1:3000), create a project, and set your Gemini API key from the sidebar.
 
-The renderer image is tagged `ai-video-editor-renderer:4.0.503`. Rebuild it after changing anything under `renderer/`, changing the renderer lockfile, or changing the image tag.
+The renderer image is tagged `code2video-ai-renderer:4.0.503`. Rebuild it after changing anything under `renderer/`, changing the renderer lockfile, or changing the image tag.
 
 ## Common commands
 
@@ -102,7 +102,7 @@ Docker mode is the secure default:
 
 ```text
 RENDERER_MODE=docker
-REMOTION_RENDERER_IMAGE=ai-video-editor-renderer:4.0.503
+REMOTION_RENDERER_IMAGE=code2video-ai-renderer:4.0.503
 ```
 
 Docker renders run with `--network none`, so generated compositions must use bundled or local assets. Remote fonts, audio, images, APIs, and CDNs are not available during render.
